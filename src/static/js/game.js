@@ -46,6 +46,22 @@ let basketSignature = null;
 const FEED_REFRESH_MS = 5000;
 let feedTimer = null;
 
+// Teacher mode: the lesson a tick queues arrives seconds later on a worker thread, so the
+// page stops the clock immediately, opens the card in a waiting state, and polls until the
+// lesson lands. `shownLessons` stops a lesson already taught from re-opening every time the
+// feed is re-rendered.
+const TEACHER_KEY = 'tradingTeacher.teacherMode';
+const TOUR_KEY = 'tradingTeacher.tourDone';
+const LESSON_POLL_MS = 1200;
+// Past this the lesson is almost certainly not coming (no key, dead subprocess, Gemini
+// rate-limited). The player is let go rather than left staring at a spinner.
+const LESSON_WAIT_MS = 30000;
+let teacherMode = true;
+let awaitingLesson = null;
+let lessonPollTimer = null;
+let lessonWaitStarted = 0;
+const shownLessons = new Set();
+
 // Signals live behind a drawer, so the page has to remember how many have arrived and how
 // many of those the player has actually looked at.
 let signalsOpen = false;
@@ -155,6 +171,53 @@ function renderHoldings(state) {
     }
 }
 
+function renderBills(state) {
+    const bills = state.expenses;
+    if (!bills) return;
+
+    const overdrawn = state.portfolio.overdrawn;
+    el('overdrawn-banner').classList.toggle('hidden', !overdrawn);
+    el('bills-panel').className = `rounded-3xl border p-6 ${
+        overdrawn ? 'border-down/50 bg-down/5' : 'border-line bg-surface'}`;
+
+    const runway = el('bills-runway');
+    // Months of runway is the number that should change how much gets invested, so it is
+    // coloured like a warning long before the balance actually goes red.
+    const months = bills.months_of_runway;
+    runway.textContent = months == null ? 'no bills'
+        : months < 0 ? 'overdrawn'
+            : `${months} months of runway`;
+    runway.className = 'rounded-full border px-3 py-1 text-xs ' + (
+        months == null ? 'border-line text-muted'
+            : months < 1 ? 'border-down/50 bg-down/10 text-down'
+                : months < 3 ? 'border-warn/50 bg-warn/10 text-warn'
+                    : 'border-line text-muted');
+
+    el('bills-total').textContent = bills.bill_count
+        ? `${bills.bill_count} standing orders · ${money(bills.monthly_total)} a month out of your cash`
+        : '';
+
+    const list = el('bills-list');
+    const upcoming = bills.upcoming || [];
+    if (!upcoming.length) {
+        list.innerHTML = '<p class="text-xs text-dim">No standing orders on this account.</p>';
+    } else {
+        list.innerHTML = upcoming.map((bill) => `
+            <div class="flex items-baseline justify-between gap-3 rounded-xl border border-line bg-ink-soft px-3 py-2">
+                <span>
+                    <span class="block font-medium">${bill.label}</span>
+                    <span class="block text-xs text-dim">${bill.due_date}${bill.days_away <= 7 ? ` · in ${bill.days_away} days` : ''}</span>
+                </span>
+                <span class="shrink-0 tabular-nums ${bill.days_away <= 7 ? 'text-warn' : 'text-muted'}">${money(bill.amount)}</span>
+            </div>`).join('');
+    }
+
+    el('bills-paid').textContent = bills.paid_to_date
+        ? `${money(bills.paid_to_date)} paid so far this run. Your trading is ${signed(state.portfolio.trading_return_pct)}% `
+          + `before bills, ${signed(state.portfolio.total_return_pct)}% after.`
+        : '';
+}
+
 function renderBasketNote(payload) {
     const series = payload.series || [];
     const note = el('basket-note');
@@ -204,6 +267,7 @@ function render(state) {
     renderWatchlist(state);
     renderTradePanel(state);
     renderHoldings(state);
+    renderBills(state);
     updateCharts(charts, state);
     renderFeed(state.ai_feed);
     renderPatterns(state.patterns);
@@ -213,6 +277,7 @@ function render(state) {
 
 function renderFeed(feed) {
     if (!feed.length) return;
+    noteLessons(feed);
     const container = el('ai-feed');
     container.innerHTML = '';
     for (const entry of feed) {
@@ -400,6 +465,21 @@ function logSignals(signals) {
     updateSignalsBadge();
 }
 
+// A bill leaving the account is an event the player should feel, not something they
+// discover later by noticing the cash number is smaller.
+function logCharges(charges) {
+    for (const charge of charges) {
+        const broke = charge.cash_after < 0;
+        toast(
+            `${charge.label} · ${money(charge.amount)}`,
+            broke
+                ? `Paid on ${charge.due_date}. Your cash is now ${money(charge.cash_after)} - you are overdrawn.`
+                : `Paid on ${charge.due_date}. ${money(charge.cash_after)} left in cash.`,
+            broke ? 'bearish' : 'neutral',
+        );
+    }
+}
+
 function toast(title, message, direction) {
     const tone = direction === 'bullish' ? 'border-up' :
         direction === 'bearish' ? 'border-down' : 'border-line-strong';
@@ -525,7 +605,17 @@ async function advance(days = 1) {
         });
         render(state);
         logSignals(state.signals || []);
+        logCharges(state.charged || []);
         scheduleBasket();
+        // The lesson itself is still being written on a worker thread. Teacher mode stops
+        // the clock now, on the tick that queued it, so the player is not three days past
+        // the pattern by the time it can be explained.
+        const lesson = (state.pending_ai || []).find((job) => job.kind === 'PATTERN_LESSON');
+        if (teacherMode && lesson && !awaitingLesson) {
+            pause();
+            openCoach(lesson);
+            return;
+        }
         // AI runs in the background, so its output lands after the tick that queued it.
         // Nothing to poll for while the clock is running - the next advance already
         // returns the updated feed - whereas the two timers this used to arm on every
@@ -653,6 +743,286 @@ async function refreshSimulation() {
     }
 }
 
+// --- teacher mode ---------------------------------------------------------
+
+function setTeacherMode(on) {
+    teacherMode = on;
+    el('teacher-mode').checked = on;
+    try { localStorage.setItem(TEACHER_KEY, on ? '1' : '0'); } catch { /* private mode */ }
+}
+
+function openCoach(job) {
+    awaitingLesson = job;
+    lessonWaitStarted = Date.now();
+    el('coach-title').textContent = job.pattern || 'A pattern just appeared';
+    el('coach-subtitle').textContent = `${job.ticker}${job.date ? ` · ${job.date}` : ''}`;
+    el('coach-family').textContent = 'analysing';
+    el('coach-body').classList.add('hidden');
+    el('coach-body').innerHTML = '';
+    // Rebuilt every time: coachGaveUp() overwrites this block, so a second lesson would
+    // otherwise open showing the previous one's failure message and no spinner.
+    el('coach-loading').innerHTML = `
+        <span class="h-5 w-5 animate-spin rounded-full border-2 border-line-strong border-t-accent"></span>
+        <span class="text-sm text-muted">Reading your chart and writing the explanation&hellip;</span>`;
+    el('coach-loading').classList.remove('hidden');
+    const overlay = el('coach-overlay');
+    overlay.classList.remove('hidden');
+    overlay.classList.add('flex');
+    pollLesson();
+}
+
+function fillCoach(entry) {
+    const lesson = entry.payload || {};
+    const readings = lesson.context || {};
+    const steps = lesson.how_to_spot || [];
+    el('coach-title').textContent = lesson.name || 'Pattern';
+    el('coach-subtitle').textContent = `${entry.ticker} · ${entry.sim_date}`
+        + (lesson.tension ? ` · ${lesson.tension}` : '');
+    const family = el('coach-family');
+    family.textContent = lesson.family || 'pattern';
+    family.className = 'shrink-0 rounded-full border px-3 py-1 text-[10px] uppercase tracking-wide '
+        + (FAMILY_TONE[lesson.family] || 'border-line text-muted');
+
+    const figures = [
+        ['close', readings.close], ['RSI', readings.rsi14],
+        ['SMA20', readings.sma20], ['SMA50', readings.sma50],
+    ].filter(([, value]) => value != null)
+        .map(([label, value]) => `<span class="rounded-full border border-line px-3 py-1 font-mono text-xs text-muted">${label} ${Number(value).toFixed(2)}</span>`)
+        .join('');
+
+    el('coach-body').innerHTML = `
+        <p class="text-base leading-relaxed text-white">${lesson.what_it_is || ''}</p>
+        ${figures ? `<div class="flex flex-wrap gap-2">${figures}</div>` : ''}
+        ${steps.length ? `
+            <div>
+                <p class="mb-2 text-xs uppercase tracking-wide text-dim">How to spot it on your chart</p>
+                <ol class="space-y-2 text-sm text-muted">
+                    ${steps.map((step, i) => `<li class="flex gap-3"><span class="text-accent-soft">${i + 1}.</span><span>${step}</span></li>`).join('')}
+                </ol>
+            </div>` : ''}
+        ${lesson.why_it_matters ? `<div><p class="mb-1 text-xs uppercase tracking-wide text-dim">Why it matters</p><p class="text-sm text-muted">${lesson.why_it_matters}</p></div>` : ''}
+        ${lesson.common_mistake ? `<div class="rounded-2xl border border-warn/40 bg-warn/10 p-4"><p class="mb-1 text-xs uppercase tracking-wide text-warn">Common mistake</p><p class="text-sm text-warn">${lesson.common_mistake}</p></div>` : ''}
+        ${lesson.watch_next ? `<div><p class="mb-1 text-xs uppercase tracking-wide text-dim">Watch next</p><p class="text-sm text-muted">${lesson.watch_next}</p></div>` : ''}
+        <p class="text-[11px] uppercase tracking-wide text-dim">
+            ${lesson.source === 'gemini' ? 'Gemini coach' : 'Built-in syllabus'} · taught from ${lesson.signal || lesson.name || 'the chart'}
+        </p>`;
+    el('coach-loading').classList.add('hidden');
+    el('coach-body').classList.remove('hidden');
+}
+
+function coachGaveUp() {
+    el('coach-loading').innerHTML = `
+        <p class="text-sm text-muted">
+            The coach could not write this one up - the AI is unavailable right now. The pattern
+            still fired on your chart, and the Signals drawer has the detector's own note on it.
+        </p>`;
+}
+
+function closeCoach(resume) {
+    clearTimeout(lessonPollTimer);
+    lessonPollTimer = null;
+    awaitingLesson = null;
+    const overlay = el('coach-overlay');
+    overlay.classList.add('hidden');
+    overlay.classList.remove('flex');
+    if (resume) play();
+}
+
+async function pollLesson() {
+    if (!awaitingLesson) return;
+    if (Date.now() - lessonWaitStarted > LESSON_WAIT_MS) {
+        coachGaveUp();
+        return;
+    }
+    try {
+        const state = await call(`/api/session/${sessionId}/state?focus=${focus || ''}`);
+        renderFeed(state.ai_feed);
+        renderPatterns(state.patterns);
+    } catch (error) {
+        console.error(error);
+    }
+    // renderFeed fills the card and clears awaitingLesson the moment the lesson lands.
+    if (awaitingLesson) lessonPollTimer = setTimeout(pollLesson, LESSON_POLL_MS);
+}
+
+// Every lesson already on screen counts as taught, so only one that arrives while the
+// coach is waiting opens the card. Without this baseline, reloading a session would
+// re-teach every lesson it had ever been given.
+function noteLessons(feed) {
+    const lessons = feed.filter((entry) => entry.type === 'PATTERN_LESSON');
+    if (!awaitingLesson) {
+        for (const entry of lessons) shownLessons.add(entry.id);
+        return;
+    }
+    const fresh = lessons.find((entry) => !shownLessons.has(entry.id));
+    if (!fresh) return;
+    shownLessons.add(fresh.id);
+    awaitingLesson = null;
+    clearTimeout(lessonPollTimer);
+    lessonPollTimer = null;
+    fillCoach(fresh);
+}
+
+// --- the walkthrough ------------------------------------------------------
+
+const TOUR_STEPS = [
+    {
+        title: 'This is a flight simulator for trading',
+        body: 'You are standing on one day of real market history, with real market rules and '
+            + 'fake money. Nothing here can cost you anything, so the only thing to do is try '
+            + 'things and watch what happens.',
+    },
+    {
+        target: 'watchlist',
+        title: 'The stocks you picked',
+        body: 'Each tile is one company you are following, with its latest price and how much it '
+            + 'moved. Click one to pull its chart up. The green badge is how many shares you own.',
+    },
+    {
+        target: 'price-chart',
+        title: 'The price chart',
+        body: 'The bright line is the closing price each day. The two smoother lines are the '
+            + 'average price over the last 20 and 50 days - when the fast one crosses the slow '
+            + 'one, something has changed. The bars along the bottom are how many shares changed '
+            + 'hands that day.',
+    },
+    {
+        target: 'rsi-chart',
+        title: 'Two gauges under the chart',
+        body: 'RSI runs 0 to 100 and says how hard the stock has been bought lately: over 70 it '
+            + 'has run hot, under 30 it has been dumped. MACD beside it tends to turn slightly '
+            + 'before the price does. You do not need to memorise either - the coach explains '
+            + 'each one the first time it shows up.',
+    },
+    {
+        target: 'buy-btn',
+        title: 'Buying and selling',
+        body: 'Type a number of shares and press Buy or Sell. Trades fill at the closing price of '
+            + 'the day you are standing on, and the money comes out of the cash shown at the top. '
+            + 'Max works out the most you can afford right now.',
+    },
+    {
+        target: 'play-btn',
+        title: 'Moving the clock',
+        body: 'Next day steps forward one trading day. Play runs the clock by itself and the '
+            + 'slider sets the speed. Start slow - one day a second is plenty while you are still '
+            + 'learning to read the chart.',
+    },
+    {
+        target: 'teacher-row',
+        title: 'Teacher mode',
+        body: 'Leave this switched on. Whenever a new pattern appears on one of your stocks the '
+            + 'clock stops and a card explains what just happened, what it usually means, and '
+            + 'what to watch for next - before you trade through it.',
+    },
+    {
+        target: 'ai-feed',
+        title: 'The AI coach',
+        body: 'Chart reads, invented headlines and pattern lessons all land here. Ask for a read '
+            + 'at any time to get an opinion on the stock you are looking at, quoting the exact '
+            + 'numbers it used.',
+    },
+    {
+        target: 'pattern-list',
+        title: 'Your pattern scorecard',
+        body: 'Seven patterns worth knowing. Each is ticked off the first time it appears in a '
+            + 'stock you actually hold, so every lesson is about your chart rather than a '
+            + 'textbook. That is the game: collect all seven and keep the account green while '
+            + 'you do it.',
+    },
+];
+
+let tourIndex = 0;
+let tourTarget = null;
+let tourSaved = null;
+
+function clearSpot() {
+    if (tourTarget && tourSaved) {
+        tourTarget.style.position = tourSaved.position;
+        tourTarget.style.zIndex = tourSaved.zIndex;
+        tourTarget.style.boxShadow = tourSaved.boxShadow;
+        tourTarget.style.borderRadius = tourSaved.borderRadius;
+    }
+    tourTarget = null;
+    tourSaved = null;
+}
+
+// Inline styles rather than a class: the highlight has to sit above the tour backdrop, and
+// a class invented here would not exist in the compiled Tailwind build.
+function spotlight(element) {
+    clearSpot();
+    if (!element) return;
+    tourTarget = element;
+    tourSaved = {
+        position: element.style.position,
+        zIndex: element.style.zIndex,
+        boxShadow: element.style.boxShadow,
+        borderRadius: element.style.borderRadius,
+    };
+    element.style.position = 'relative';
+    element.style.zIndex = '65';
+    element.style.boxShadow = '0 0 0 3px #3b82f6, 0 0 45px rgba(59,130,246,0.35)';
+    element.style.borderRadius = '1.5rem';
+}
+
+function placeCard(element) {
+    const card = el('tour-card');
+    card.classList.remove('hidden');
+    const box = card.getBoundingClientRect();
+    if (!element) {
+        card.style.top = `${Math.max(16, (window.innerHeight - box.height) / 2)}px`;
+        card.style.left = `${Math.max(16, (window.innerWidth - box.width) / 2)}px`;
+        return;
+    }
+    const rect = element.getBoundingClientRect();
+    const below = rect.bottom + 16;
+    const top = below + box.height < window.innerHeight
+        ? below
+        : Math.max(16, rect.top - box.height - 16);
+    const left = Math.min(
+        Math.max(16, rect.left + rect.width / 2 - box.width / 2),
+        window.innerWidth - box.width - 16,
+    );
+    card.style.top = `${top}px`;
+    card.style.left = `${left}px`;
+}
+
+function showTourStep(index) {
+    tourIndex = index;
+    const step = TOUR_STEPS[index];
+    // The panel, not the canvas inside it: highlighting a bare canvas lights up a rectangle
+    // floating inside its own card. A label is its own control, though - walking up from
+    // the teacher switch would light the entire clock panel instead of the switch.
+    const raw = step.target ? el(step.target) : null;
+    const element = raw
+        ? (raw.tagName === 'LABEL' ? raw : (raw.closest('.rounded-3xl') || raw))
+        : null;
+
+    el('tour-step').textContent = `Step ${index + 1} of ${TOUR_STEPS.length}`;
+    el('tour-title').textContent = step.title;
+    el('tour-body').textContent = step.body;
+    el('tour-back').classList.toggle('invisible', index === 0);
+    el('tour-next').textContent = index === TOUR_STEPS.length - 1 ? 'Start trading' : 'Next';
+
+    if (element) element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    spotlight(element);
+    // Placed after the scroll settles, or the card lands on the element's old position.
+    setTimeout(() => placeCard(element), element ? 320 : 0);
+}
+
+function startTour() {
+    pause();
+    el('tour-backdrop').classList.remove('hidden');
+    showTourStep(0);
+}
+
+function endTour() {
+    clearSpot();
+    el('tour-backdrop').classList.add('hidden');
+    el('tour-card').classList.add('hidden');
+    try { localStorage.setItem(TOUR_KEY, '1'); } catch { /* private mode */ }
+}
+
 // --- wiring ---------------------------------------------------------------
 
 el('signals-toggle').addEventListener('click', () => setSignalsOpen(true));
@@ -664,6 +1034,23 @@ document.addEventListener('keydown', (event) => {
 
 el('play-btn').addEventListener('click', () => (timer ? pause() : play()));
 el('step-btn').addEventListener('click', () => advance(1));
+
+el('teacher-mode').addEventListener('change', (event) => setTeacherMode(event.target.checked));
+el('coach-continue').addEventListener('click', () => closeCoach(false));
+el('coach-resume').addEventListener('click', () => closeCoach(true));
+
+el('tutorial-btn').addEventListener('click', startTour);
+el('tour-skip').addEventListener('click', endTour);
+el('tour-back').addEventListener('click', () => showTourStep(Math.max(0, tourIndex - 1)));
+el('tour-next').addEventListener('click', () => {
+    if (tourIndex >= TOUR_STEPS.length - 1) endTour();
+    else showTourStep(tourIndex + 1);
+});
+document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (!el('tour-card').classList.contains('hidden')) endTour();
+    else if (!el('coach-overlay').classList.contains('hidden')) closeCoach(false);
+});
 el('buy-btn').addEventListener('click', () => trade('BUY'));
 el('sell-btn').addEventListener('click', () => trade('SELL'));
 el('trade-ticker').addEventListener('change', (event) => setFocus(event.target.value));
@@ -829,9 +1216,20 @@ async function checkAI() {
 }
 
 (async function start() {
+    let savedTeacher = null;
+    let tourDone = null;
+    try {
+        savedTeacher = localStorage.getItem(TEACHER_KEY);
+        tourDone = localStorage.getItem(TOUR_KEY);
+    } catch { /* private mode */ }
+    setTeacherMode(savedTeacher === null ? true : savedTeacher === '1');
+
     await loadCompanyNames();
     checkAI();
     render(await call(`/api/session/${sessionId}/state`));
     refreshSimulation();
     refreshBasket();
+
+    // First visit gets walked through the screen before the clock ever moves.
+    if (!tourDone) startTour();
 })();

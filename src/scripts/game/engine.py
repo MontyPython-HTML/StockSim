@@ -26,7 +26,7 @@ from decimal import Decimal
 import config
 from scripts.api import nessie
 from scripts.database import database
-from scripts.game import events, indicators, patterns, price_cache, price_source
+from scripts.game import events, expenses, indicators, patterns, price_cache, price_source
 
 DEFAULT_CHART_WINDOW = 180
 
@@ -88,7 +88,9 @@ def normalise_tickers(raw) -> list[str]:
 # --- state ----------------------------------------------------------------
 
 
-def _portfolio(session: dict, holdings: list[dict], closes: dict[str, float]) -> dict:
+def _portfolio(
+    session: dict, holdings: list[dict], closes: dict[str, float], bills_paid: float = 0.0
+) -> dict:
     """Value every position at its own last close, not the focused chart's price."""
     positions = []
     market_value = 0.0
@@ -118,6 +120,12 @@ def _portfolio(session: dict, holdings: list[dict], closes: dict[str, float]) ->
         "net_worth": net_worth,
         "starting_cash": starting_cash,
         "total_return_pct": (net_worth - starting_cash) / starting_cash * 100,
+        # Rent is not a trading loss. The account number is the one that decides whether
+        # the player went broke; this one is the only fair read on their decisions, and
+        # showing both is what makes the difference between them teachable.
+        "bills_paid": bills_paid,
+        "trading_return_pct": (net_worth + bills_paid - starting_cash) / starting_cash * 100,
+        "overdrawn": cash < 0,
     }
 
 
@@ -155,6 +163,8 @@ def _state_from_bundle(
 
     focus_source = price_source.for_session(session, focus)
     history = focus_source.history_through(sim_date)
+    paid_rows = bundle.get("expenses") or []
+    bills_paid = float(sum(float(row["amount"]) for row in paid_rows))
 
     return {
         "session_id": session_id,
@@ -176,7 +186,7 @@ def _state_from_bundle(
             }
             for ticker in watchlist
         ],
-        "portfolio": _portfolio(session, bundle["holdings"], closes),
+        "portfolio": _portfolio(session, bundle["holdings"], closes, bills_paid),
         "chart": indicators.to_series(history.tail(window_days)),
         "trades": [
             {
@@ -201,6 +211,20 @@ def _state_from_bundle(
         # The syllabus with what this session has covered, so the screen can show which
         # patterns the player has actually been taught and which are still ahead of them.
         "patterns": patterns.progress(bundle["events"]),
+        # Real-life money: what the bank has already taken, and what is about to be taken.
+        "expenses": {
+            **expenses.summary(session, sim_date, bundle.get("expenses") or []),
+            "charged": [
+                {
+                    "label": row["label"],
+                    "payee": row.get("payee"),
+                    "due_date": _as_date(row["due_date"]).isoformat(),
+                    "amount": float(row["amount"]),
+                    "cash_after": float(row["cash_after"]),
+                }
+                for row in (bundle.get("expenses") or [])
+            ],
+        },
     }
 
 
@@ -589,6 +613,11 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
         **({"status": "finished"} if finished else {}),
     )
 
+    # Standing orders come out of the same cash the player trades with, so they are
+    # charged for the days the clock just crossed - after the walk, before the state the
+    # response is built from.
+    charged = expenses.apply_due(session, _as_date(session["sim_date"]), sim_date)
+
     pending = (
         _maybe_schedule_ai(
             session_id, watchlist, sim_date, bundle["events"], sources, signals
@@ -600,9 +629,13 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
     session["sim_date"] = sim_date
     if finished:
         session["status"] = "finished"
+    # The walk charged bills against this session dict, so the bundle's expense list is
+    # one tick stale; the rows just written are the ones the player has not seen.
+    bundle["expenses"] = list(bundle.get("expenses") or []) + charged
     state = _state_from_bundle(bundle, focus)
     state["signals"] = signals
     state["pending_ai"] = pending
+    state["charged"] = charged
     return state
 
 

@@ -192,3 +192,22 @@ CREATE TABLE IF NOT EXISTS simulated_prices (
 
 CREATE INDEX IF NOT EXISTS idx_simulated_prices_session
     ON simulated_prices (session_id, ticker, ts);
+
+-- Standing orders pulled from the player's Nessie account, charged as the clock passes
+-- their day of the month. The unique key is what makes a tick idempotent: re-advancing
+-- over a day that already charged rent must not charge it twice.
+CREATE TABLE IF NOT EXISTS session_expenses (
+    id          BIGSERIAL PRIMARY KEY,
+    session_id  UUID NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
+    bill_id     TEXT NOT NULL,
+    label       TEXT NOT NULL,
+    payee       TEXT,
+    due_date    DATE NOT NULL,
+    amount      NUMERIC(14,2) NOT NULL,
+    cash_after  NUMERIC(14,2) NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (session_id, bill_id, due_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_expenses_session
+    ON session_expenses (session_id, due_date);

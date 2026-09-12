@@ -1,4 +1,8 @@
+import hashlib
 import json
+import threading
+import time
+from collections import OrderedDict
 from datetime import date
 from functools import lru_cache
 
@@ -13,7 +17,78 @@ REQUEST_TIMEOUT_MS = 10000
 MAX_ATTEMPTS = 4
 FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash"]
 
+# Every response here is a small JSON object. Without a ceiling the model is free to pad
+# the prose fields, which costs output tokens and latency on every single call.
+MAX_OUTPUT_TOKENS = 900
+
+# A model/key pair that just failed is very unlikely to work again a second later, and
+# retrying it costs a full REQUEST_TIMEOUT_MS before the chain moves on. Remembering the
+# failure for a short while turns a dead key from a per-call tax into a one-off.
+FAILURE_COOLDOWN_SECONDS = 90
+
+# Identical prompt means identical question: the same pattern, on the same symbol, on the
+# same bar. Teaching answers are reused rather than re-bought, which is what makes
+# replaying a stretch - or two players trading the same week - cost one call instead of N.
+CACHE_TTL_SECONDS = 6 * 60 * 60
+CACHE_MAX_ENTRIES = 256
+
 DISCLAIMER = "Simulated teaching output. Not financial advice."
+
+_cooldowns: dict[tuple[str, str], float] = {}
+_cache: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()
+_state_lock = threading.Lock()
+
+
+def _cache_get(key: str) -> dict | None:
+    with _state_lock:
+        entry = _cache.get(key)
+        if entry is None:
+            return None
+        stored_at, payload = entry
+        if time.monotonic() - stored_at > CACHE_TTL_SECONDS:
+            _cache.pop(key, None)
+            return None
+        _cache.move_to_end(key)
+    # Copied on the way out so a caller stamping session_id onto the result cannot
+    # write that into every future reader's copy.
+    return json.loads(json.dumps(payload))
+
+
+def _cache_put(key: str, payload: dict) -> None:
+    with _state_lock:
+        _cache[key] = (time.monotonic(), payload)
+        _cache.move_to_end(key)
+        while len(_cache) > CACHE_MAX_ENTRIES:
+            _cache.popitem(last=False)
+
+
+def _cooling_down(pair: tuple[str, str]) -> bool:
+    with _state_lock:
+        until = _cooldowns.get(pair)
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            _cooldowns.pop(pair, None)
+            return False
+        return True
+
+
+def _mark_failed(pair: tuple[str, str]) -> None:
+    with _state_lock:
+        _cooldowns[pair] = time.monotonic() + FAILURE_COOLDOWN_SECONDS
+
+
+def _mark_ok(pair: tuple[str, str]) -> None:
+    with _state_lock:
+        _cooldowns.pop(pair, None)
+
+
+def cache_stats() -> dict:
+    with _state_lock:
+        return {
+            "cached_answers": len(_cache),
+            "cooling_down": [f"{model}" for model, _ in _cooldowns],
+        }
 
 
 @lru_cache(maxsize=4)
@@ -37,10 +112,16 @@ def _candidates() -> list[tuple[str, str]]:
     or not enabled for a key, the cheapest recovery is the SAME model on the next key.
     Grouping by key first burned every attempt on one dead key and never reached the
     second. Capped so the chain stays under the MCP call timeout in gemini_mcp_client.
+
+    Pairs that failed within the last FAILURE_COOLDOWN_SECONDS are moved to the back
+    rather than dropped: skipping them is the point, but a blip that knocks out every
+    pair must not leave the coach with nothing to try.
     """
     models = [config.GEMINI_MODEL] + [m for m in FALLBACK_MODELS if m != config.GEMINI_MODEL]
     pairs = [(model, key) for model in models for key in config.GEMINI_API_KEYS]
-    return pairs[:MAX_ATTEMPTS]
+    fresh = [pair for pair in pairs if not _cooling_down(pair)]
+    resting = [pair for pair in pairs if _cooling_down(pair)]
+    return (fresh + resting)[:MAX_ATTEMPTS]
 
 
 MISSING_KEY_MESSAGE = (
@@ -49,11 +130,26 @@ MISSING_KEY_MESSAGE = (
 )
 
 
-def generate_json(prompt: str, temperature: float = 0.9) -> dict:
+def generate_json(prompt: str, temperature: float = 0.9, cache: bool = True) -> dict:
+    """One JSON answer from whichever model/key pair answers first.
+
+    `cache=False` is for the deliberately creative calls - invented headlines - where two
+    sessions asking the same question are supposed to get different stories. Teaching
+    answers cache: the same pattern on the same bar has one correct explanation.
+    """
     if not config.GEMINI_API_KEYS:
         raise RuntimeError(MISSING_KEY_MESSAGE)
+
+    key = None
+    if cache:
+        key = hashlib.sha256(f"{temperature}::{prompt}".encode()).hexdigest()
+        hit = _cache_get(key)
+        if hit is not None:
+            return hit
+
     errors: list[str] = []
-    for model, api_key in _candidates():
+    for pair in _candidates():
+        model, api_key = pair
         try:
             response = _client_for(api_key).models.generate_content(
                 model=model,
@@ -61,11 +157,18 @@ def generate_json(prompt: str, temperature: float = 0.9) -> dict:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=temperature,
+                    max_output_tokens=MAX_OUTPUT_TOKENS,
                 ),
             )
-            return json.loads(response.text)
+            data = json.loads(response.text)
         except Exception as exc:
+            _mark_failed(pair)
             errors.append(f"{model}: {type(exc).__name__} {str(exc)[:80]}")
+            continue
+        _mark_ok(pair)
+        if key is not None:
+            _cache_put(key, data)
+        return data
     raise RuntimeError("all Gemini attempts failed -> " + " | ".join(errors))
 
 
@@ -189,7 +292,7 @@ Context (the only data you may reference):
   story is company-specific
 - "lesson": one sentence that should {lesson_hint}
 """
-    data = generate_json(prompt, temperature=1.0)
+    data = generate_json(prompt, temperature=1.0, cache=False)
 
     def bound(value, low: float, high: float, fallback: float) -> float:
         try:
@@ -327,7 +430,7 @@ exactly these keys:
 - "lesson": one sentence telling the student how a disciplined trader should react to this kind
   of headline, given what the chart is doing
 """
-    data = generate_json(prompt, temperature=1.0)
+    data = generate_json(prompt, temperature=1.0, cache=False)
     return {
         "ticker": ticker,
         "as_of": as_of.isoformat(),

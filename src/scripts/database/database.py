@@ -337,11 +337,70 @@ def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
                     SELECT id, event_type, ticker, sim_date, payload, created_at
                     FROM mcp_events WHERE session_id = %(sid)s
                     ORDER BY created_at DESC, id DESC LIMIT %(limit)s
-                ) e) AS events
+                ) e) AS events,
+                (SELECT coalesce(json_agg(x), '[]'::json) FROM (
+                    SELECT id, bill_id, label, payee, due_date, amount, cash_after
+                    FROM session_expenses WHERE session_id = %(sid)s ORDER BY due_date, id
+                ) x) AS expenses
             """,
             {"sid": session_id, "limit": event_limit},
         )
         return _revive_dates(cur.fetchone())
+
+
+# --- standing orders ------------------------------------------------------
+
+
+def charge_expenses(session_id: str, charges: list[dict], new_cash: Decimal) -> list[dict]:
+    """Write the bills that came due and the cash left after them, in one transaction.
+
+    ON CONFLICT DO NOTHING against (session_id, bill_id, due_date) is what makes this safe
+    to call from a tick that overlaps one already applied: the same rent is never taken
+    twice, however the clock got there.
+    """
+    if not charges:
+        return []
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            applied = []
+            for charge in charges:
+                cur.execute(
+                    """
+                    INSERT INTO session_expenses
+                        (session_id, bill_id, label, payee, due_date, amount, cash_after)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (session_id, bill_id, due_date) DO NOTHING
+                    RETURNING id, bill_id, label, payee, due_date, amount, cash_after
+                    """,
+                    (
+                        session_id,
+                        charge["bill_id"],
+                        charge["label"],
+                        charge.get("payee"),
+                        charge["due_date"],
+                        charge["amount"],
+                        charge["cash_after"],
+                    ),
+                )
+                row = cur.fetchone()
+                if row:
+                    applied.append(row)
+            if applied:
+                cur.execute(
+                    "UPDATE game_sessions SET cash_balance = %s, updated_at = now() WHERE id = %s",
+                    (new_cash, session_id),
+                )
+            return applied
+
+
+def list_expenses(session_id: str) -> list[dict]:
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT id, bill_id, label, payee, due_date, amount, cash_after "
+            "FROM session_expenses WHERE session_id = %s ORDER BY due_date, id",
+            (session_id,),
+        )
+        return cur.fetchall()
 
 
 # --- MCP event log --------------------------------------------------------

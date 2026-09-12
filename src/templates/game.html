@@ -14,11 +14,18 @@
 
         <header class="mb-8 flex flex-wrap items-end justify-between gap-8">
             <div>
-                <a href="/"
-                    class="inline-flex items-center gap-2 text-sm text-muted transition hover:text-white">
-                    <span class="flex h-6 w-6 items-center justify-center rounded-full border border-line-strong">&larr;</span>
-                    New session
-                </a>
+                <div class="flex items-center gap-4">
+                    <a href="/"
+                        class="inline-flex items-center gap-2 text-sm text-muted transition hover:text-white">
+                        <span class="flex h-6 w-6 items-center justify-center rounded-full border border-line-strong">&larr;</span>
+                        New session
+                    </a>
+                    <button id="tutorial-btn" type="button"
+                        class="inline-flex items-center gap-2 rounded-full border border-line-strong px-3 py-1 text-sm text-muted transition hover:border-brand hover:text-white">
+                        <span class="flex h-5 w-5 items-center justify-center rounded-full border border-line-strong text-xs">?</span>
+                        How this works
+                    </button>
+                </div>
                 <h1 class="mt-3 text-5xl font-bold tracking-tight">
                     <span id="sim-date">&mdash;</span>
                 </h1>
@@ -126,6 +133,18 @@
                         <div id="status-pill"
                             class="rounded-full border border-line px-4 py-1.5 text-sm text-muted">Paused</div>
                     </div>
+                    <label id="teacher-row"
+                        class="mt-5 flex cursor-pointer items-start gap-3 border-t border-line pt-5">
+                        <input type="checkbox" id="teacher-mode" checked
+                            class="mt-1 h-5 w-5 shrink-0 accent-accent">
+                        <span>
+                            <span class="block font-semibold">Teacher mode</span>
+                            <span class="block text-sm text-dim">
+                                Stop the clock whenever a new pattern appears and walk me through
+                                what it means before I keep trading.
+                            </span>
+                        </span>
+                    </label>
                 </div>
             </section>
 
@@ -294,6 +313,27 @@
                     </div>
                 </div>
 
+                <!-- The bank side of the account. Trading is not the only thing taking
+                     money out, and this is where that becomes obvious. -->
+                <div id="bills-panel" class="rounded-3xl border border-line bg-surface p-6">
+                    <div class="mb-1 flex items-center justify-between gap-3">
+                        <h2 class="text-lg font-semibold">Bills</h2>
+                        <span id="bills-runway"
+                            class="rounded-full border border-line px-3 py-1 text-xs text-muted">&mdash;</span>
+                    </div>
+                    <p id="bills-total" class="mb-4 text-xs text-dim"></p>
+                    <div id="overdrawn-banner"
+                        class="mb-4 hidden rounded-xl border border-down/50 bg-down/10 p-3 text-sm text-down">
+                        <span class="font-semibold">You are overdrawn.</span>
+                        Bills came out while your money was tied up in stock. Sell something to
+                        get back above zero - at whatever price the market is offering today.
+                    </div>
+                    <div id="bills-list" class="space-y-2 text-sm">
+                        <p class="text-xs text-dim">No standing orders on this account.</p>
+                    </div>
+                    <p id="bills-paid" class="mt-4 border-t border-line pt-4 text-xs text-dim"></p>
+                </div>
+
                 <div class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-3 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">Pattern school</h2>
@@ -360,6 +400,66 @@
                 class="inline-block rounded-full bg-brand px-8 py-3 font-semibold transition hover:bg-brand-soft">
                 Trade another stretch
             </a>
+        </div>
+    </div>
+
+    <!-- Teacher mode: the clock stops and the pattern that just printed gets explained
+         before the player trades through it. The lesson itself arrives a moment later,
+         so the card opens in a waiting state and fills in. -->
+    <div id="coach-overlay" class="fixed inset-0 z-[55] hidden items-center justify-center bg-ink/90 p-6 backdrop-blur-sm">
+        <div class="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-accent/40 bg-surface p-8 shadow-2xl">
+            <div class="mb-5 flex items-start justify-between gap-4">
+                <div>
+                    <p class="text-xs font-semibold uppercase tracking-widest text-accent-soft">
+                        Teacher mode &middot; clock paused
+                    </p>
+                    <h2 id="coach-title" class="mt-2 text-3xl font-bold">A pattern just appeared</h2>
+                    <p id="coach-subtitle" class="mt-1 text-sm text-dim"></p>
+                </div>
+                <span id="coach-family"
+                    class="shrink-0 rounded-full border border-line px-3 py-1 text-[10px] uppercase tracking-wide text-muted"></span>
+            </div>
+
+            <div id="coach-loading" class="flex items-center gap-3 rounded-2xl border border-line bg-ink-soft p-5">
+                <span class="h-5 w-5 animate-spin rounded-full border-2 border-line-strong border-t-accent"></span>
+                <span class="text-sm text-muted">Reading your chart and writing the explanation&hellip;</span>
+            </div>
+
+            <div id="coach-body" class="hidden space-y-5"></div>
+
+            <div class="mt-8 flex flex-wrap gap-3">
+                <button id="coach-continue"
+                    class="rounded-full border border-line-strong px-6 py-3 font-semibold text-muted transition hover:border-muted hover:text-white">
+                    Got it &mdash; stay paused
+                </button>
+                <button id="coach-resume"
+                    class="rounded-full bg-accent px-6 py-3 font-semibold text-ink transition hover:bg-accent-soft">
+                    Got it &mdash; keep playing
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- The walkthrough. One card at a time, pointing at the real panel it describes. -->
+    <div id="tour-backdrop" class="fixed inset-0 z-[60] hidden bg-ink/80 backdrop-blur-[2px]"></div>
+    <div id="tour-card"
+        class="fixed z-[70] hidden w-[26rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-brand/50 bg-surface p-6 shadow-2xl">
+        <div class="mb-2 flex items-center justify-between gap-3">
+            <span id="tour-step" class="text-xs font-semibold uppercase tracking-widest text-brand-soft"></span>
+            <button id="tour-skip" type="button"
+                class="text-xs text-dim transition hover:text-white">Skip</button>
+        </div>
+        <h3 id="tour-title" class="text-xl font-bold"></h3>
+        <p id="tour-body" class="mt-2 text-sm leading-relaxed text-muted"></p>
+        <div class="mt-6 flex items-center justify-between gap-3">
+            <button id="tour-back" type="button"
+                class="rounded-full border border-line px-4 py-2 text-sm text-muted transition hover:border-muted hover:text-white">
+                Back
+            </button>
+            <button id="tour-next" type="button"
+                class="rounded-full bg-brand px-6 py-2 text-sm font-semibold transition hover:bg-brand-soft">
+                Next
+            </button>
         </div>
     </div>
 
