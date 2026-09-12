@@ -23,7 +23,9 @@ All JSON endpoints live under `/api` ([src/routes/game_routes.py](../src/routes/
 
 ### `GET /`
 
-Renders the "start a session" landing page. Passes the list of ingested tickers (from TigerData) and the default Nessie funding customer into the template.
+Renders the "start a session" landing page. Passes the ingested tickers, the full ticker
+catalog (grouped by sector in the UI, symbols without history are disabled), catalog
+stats, and the default Nessie funding customer into the template.
 
 ### `GET /game/<session_id>`
 
@@ -89,7 +91,8 @@ Several endpoints return the same shape — the full current state of one game s
 Notes:
 - `today` and `chart` come from [indicators.py](../src/scripts/game/indicators.py) — see that file (or ask about "predictors") for what `sma20`/`sma50`/`rsi14`/`macd*` mean.
 - `chart` is a rolling window (default last 180 trading days through `sim_date`), meant for feeding straight into a chart library.
-- `ai_feed` entries are whatever the Gemini MCP server has logged so far for this session (`event_type` is `"PREDICTION"` or `"NEWS_EVENT"`) — see [server.py](../src/mcp_server/server.py).
+- `ai_feed` entries are whatever the Gemini MCP server (or the local event generator) has logged so far for this session. `type` is `"PREDICTION"`, `"NEWS_EVENT"`, or `"MARKET_SHOCK"` — see [server.py](../src/mcp_server/server.py). A `MARKET_SHOCK` payload carries `bars_affected`, the number of generated sessions its headline actually moved.
+- `simulation` describes where prices are coming from. `{ "mode": "real", "ticker": "MSFT" }` while replaying real history; once forked, `"mode": "simulated"` plus the fork date, anchor price, drift, volatility and seed (see [`/api/session/<id>/simulation`](#get-apisessionsession_idsimulation)).
 - `status` is `"active"` until `sim_date` reaches `end_date` (or the ticker's last stored trading day), then it flips to `"finished"` and further `/advance` calls become no-ops.
 
 ---
@@ -120,12 +123,18 @@ Starts a new game session: picks the first available trading day on/after `start
   "ticker": "MSFT",
   "start_date": "2023-03-01",
   "end_date": "2023-12-31",
-  "nessie_customer_id": "mock-customer-001"
+  "nessie_customer_id": "mock-customer-001",
+  "simulate_future": false
 }
 ```
 - `ticker` — required.
 - `start_date`, `end_date` — required, `YYYY-MM-DD`.
 - `nessie_customer_id` — optional; defaults to `NESSIE_DEFAULT_CUSTOMER_ID` (`.env`).
+- `simulate_future` — optional, default `false`. When `true`, the session forks at the
+  end of the real data and keeps going into a generated future of its own; `end_date` in
+  the response is then extended to the end of that horizon. Optional `horizon_days`,
+  `drift`, `volatility` and `seed` tune it (see
+  [`POST /api/session/<id>/simulate`](#post-apisessionsession_idsimulate)).
 
 **Response `201`** — the [session state object](#the-session-state-object), plus a `funding` block:
 ```json
@@ -182,7 +191,7 @@ Moves the simulation forward one or more trading days.
 }
 ```
 - `signals` — any technical signals that *fired on this call* (state changes only, e.g. a crossover happening — not "RSI is currently above 70").
-- `pending_ai` — which AI event kinds were just scheduled in the background (`"PREDICTION"` and/or `"NEWS_EVENT"`). The AI call itself runs asynchronously via the Gemini MCP server and is **not** in the response yet — poll `GET /state` a few seconds later and check `ai_feed` for the result. If the MCP server is unavailable, `pending_ai` items simply never turn into `ai_feed` entries; the simulation itself is unaffected.
+- `pending_ai` — which AI event kinds were just scheduled in the background (`"PREDICTION"`, `"NEWS_EVENT"`, and `"MARKET_SHOCK"` for a session with a simulated future). The AI call itself runs asynchronously via the Gemini MCP server and is **not** in the response yet — poll `GET /state` a few seconds later and check `ai_feed` for the result. If the MCP server is unavailable, `pending_ai` items simply never turn into `ai_feed` entries; the simulation itself is unaffected.
 - Advancing past `end_date` is a no-op that just returns the final state with `status: "finished"` and empty `signals`/`pending_ai`.
 
 **Errors (`400`)** — `Session not found`.
@@ -238,6 +247,161 @@ Synchronously asks the Gemini MCP server for a prediction right now (used by the
 
 ---
 
+## `GET /api/universe`
+
+The ticker catalog: every symbol the game knows about, not just the ones with history
+loaded. Seeded from `src/scripts/ingestion/universes.py` (`nasdaq100` plus a small
+`us_tech_extra` group). A catalogued symbol with `has_data: false` needs an
+`ingest_prices.py` run; it is not an error.
+
+**Query parameters**
+- `universe` — optional, e.g. `nasdaq100`.
+- `tech_only` — optional, `true`/`1`/`yes` to return only `is_tech` symbols.
+
+**Response `200`**
+```json
+{
+  "universe": "nasdaq100",
+  "stats": { "known": 108, "ingested": 4, "tech": 66 },
+  "tickers": [
+    { "ticker": "AAPL", "company_name": "Apple", "sector": "Technology",
+      "universe": "nasdaq100", "is_tech": true,
+      "first_day": "2022-01-03", "last_day": "2024-12-31", "row_count": 753, "has_data": true },
+    { "ticker": "ABNB", "company_name": "Airbnb", "sector": "Consumer Discretionary",
+      "universe": "nasdaq100", "is_tech": false,
+      "first_day": null, "last_day": null, "row_count": 0, "has_data": false }
+  ]
+}
+```
+
+---
+
+# The simulated future
+
+Real history stops at the last ingested trading day. A session can *fork* at that point
+into a generated future (see [`simulation.py`](../src/scripts/game/simulation.py)). The
+generated bars live in `simulated_prices`, keyed by `session_id`, and are never written
+into `stock_prices` — the shared dataset stays real for every player, and each player's
+invented future is theirs alone.
+
+Generate one either up front (`"simulate_future": true` on `/api/session/start`) or
+later (`POST /api/session/<id>/simulate`).
+
+## `POST /api/session/<session_id>/simulate`
+
+Forks an existing session onto its own generated future, at the last real trading day it
+can see. Calling it again on a session that already has a future **lengthens** that
+future instead: only `horizon_days` is honoured, because the seed, anchor price and fork
+date are part of the session's identity once the player has traded in it. Re-rolling them
+would silently rewrite candles the player already acted on. A `finished` session is put
+back to `active` when it is forked.
+
+**Request body** — all optional; anything omitted is estimated from the ticker's own history.
+```json
+{
+  "horizon_days": 252,
+  "drift": 0.0005,
+  "volatility": 0.02,
+  "seed": 42
+}
+```
+- `horizon_days` — how many generated sessions to create (default `SIMULATION_HORIZON_DAYS`, 252).
+- `drift` — daily log drift. Omitted: measured from the last year of real returns and
+  capped between -20% and +30% annualised.
+- `volatility` — daily log volatility. Omitted: measured from real returns.
+- `seed` — omitted: random. Supplying one makes the whole future reproducible.
+
+The horizon grows on demand: if the player reaches the last generated bar, another 252
+sessions are appended automatically, and calling this endpoint again is the explicit way
+to ask for more (`{"horizon_days": 504}`).
+
+**Response `201`** — the [session state object](#the-session-state-object), with
+`simulation.mode` now `"simulated"` and `end_date` extended to the end of the generated
+horizon.
+
+**Errors (`400`)** — `Session not found`, or `no real history for <TICKER> at or before <date>`.
+
+---
+
+## `GET /api/session/<session_id>/simulation`
+
+The fork parameters, how far the future currently runs, and every shock applied.
+
+**Response `200`** — when the session is simulating:
+```json
+{
+  "active": true,
+  "session_id": "...",
+  "config": {
+    "ticker": "NVDA", "fork_date": "2024-12-31", "anchor_price": 134.29,
+    "horizon_days": 252, "drift": 0.00104, "volatility": 0.0328, "mean_reversion": 0.15,
+    "annualized_drift_pct": 29.98, "annualized_volatility_pct": 52.07,
+    "seed": 42, "generator": "gbm"
+  },
+  "bounds": { "first_day": "2023-01-03", "last_day": "2024-12-31", "row_count": 750 },
+  "generated_bars": 252,
+  "shocks": [
+    { "event_id": 118, "first_bar": "2025-02-04", "last_bar": "2025-02-14", "bars": 244,
+      "low_close": 131.4, "high_close": 148.9,
+      "payload": { "headline": "...", "sentiment": 0.62, "magnitude": 0.71, "source": "gemini" } }
+  ]
+}
+```
+`shocks` has one entry per event (newest first), not per bar: a single headline reprices
+dozens of generated sessions, so it reports the window it touched instead of each candle.
+
+**Response `200`** — when the session is still on real data:
+```json
+{ "active": false, "session_id": "..." }
+```
+
+**Errors (`400`)** — `Session not found`.
+
+---
+
+## `POST /api/session/<session_id>/shock`
+
+Injects one specific market event, bypassing Gemini. Same code path as an AI-generated
+event, just with the numbers handed in — useful when a demo needs a particular headline,
+or when the API is slow.
+
+**Request body**
+```json
+{
+  "headline": "NVDA lands a multi-billion dollar sovereign AI deal",
+  "summary": "optional one-liner",
+  "sentiment": 0.85,
+  "magnitude": 0.8,
+  "decay_days": 8,
+  "lesson": "optional teaching line"
+}
+```
+- `sentiment` — required, `-1`..`1` (bearish..bullish).
+- `magnitude` — required, `0`..`1`.
+- `decay_days` — optional, default `10`.
+
+**Response `201`**
+```json
+{
+  "ticker": "NVDA", "headline": "...", "sentiment": 0.85, "magnitude": 0.8,
+  "decay_days": 8, "source": "manual", "fictional": true,
+  "applied": true, "bars_affected": 244, "event_id": 118
+}
+```
+
+How the shock lands: `sentiment x magnitude x SHOCK_IMPACT_SCALE` is the total repricing
+(18% at maximum by default), of which `SHOCK_IMMEDIATE_SHARE` (40%) is priced on the day
+the story breaks and the rest bleeds in as extra drift over `decay_days`. The day-one
+bar also gets a volume spike.
+
+**Errors (`400`)**
+- `sentiment and magnitude are required`
+- `sentiment must be between -1 and 1` / `magnitude must be between 0 and 1`
+- `This session is replaying real data; fork a simulated future first.`
+- `Session not found`
+
+---
+
 ## Quick reference
 
 | Method | Path                              | Purpose                                   |
@@ -245,11 +409,15 @@ Synchronously asks the Gemini MCP server for a prediction right now (used by the
 | GET    | `/`                                | Start-session landing page (HTML)          |
 | GET    | `/game/<session_id>`               | Game screen (HTML)                         |
 | GET    | `/api/tickers`                     | List ingested tickers                      |
+| GET    | `/api/universe`                    | Ticker catalog (with/without history)      |
 | POST   | `/api/session/start`               | Start a new session                        |
 | GET    | `/api/session/<id>/state`          | Fetch current session state                |
 | POST   | `/api/session/<id>/advance`        | Advance N trading days                     |
 | POST   | `/api/session/<id>/trade`          | Buy/sell at today's close                  |
 | POST   | `/api/session/<id>/predict`        | Ask the AI coach for a prediction now      |
+| POST   | `/api/session/<id>/simulate`       | Fork onto a generated future               |
+| GET    | `/api/session/<id>/simulation`     | Fork parameters, bounds, applied shocks    |
+| POST   | `/api/session/<id>/shock`          | Inject one specific market event           |
 
 ## curl examples
 
@@ -258,6 +426,11 @@ Synchronously asks the Gemini MCP server for a prediction right now (used by the
 curl -X POST http://127.0.0.1:5000/api/session/start \
   -H "Content-Type: application/json" \
   -d '{"ticker":"MSFT","start_date":"2023-03-01","end_date":"2023-12-31"}'
+
+# start a session that keeps going past the real data
+curl -X POST http://127.0.0.1:5000/api/session/start \
+  -H "Content-Type: application/json" \
+  -d '{"ticker":"NVDA","start_date":"2024-06-01","end_date":"2024-12-31","simulate_future":true}'
 
 # advance 5 trading days
 curl -X POST http://127.0.0.1:5000/api/session/<session_id>/advance \
@@ -269,6 +442,11 @@ curl -X POST http://127.0.0.1:5000/api/session/<session_id>/trade \
 
 # ask the AI coach for a read
 curl -X POST http://127.0.0.1:5000/api/session/<session_id>/predict
+
+# move the simulated market with a headline
+curl -X POST http://127.0.0.1:5000/api/session/<session_id>/shock \
+  -H "Content-Type: application/json" \
+  -d '{"headline":"Regulators open a probe","sentiment":-0.7,"magnitude":0.6}'
 ```
 
 ---
@@ -284,6 +462,11 @@ Where each piece of this API actually lives, and the exact handler for each endp
 | [`src/scripts/game/engine.py`](../src/scripts/game/engine.py) | Game rules: sessions, trades, advancing days, scheduling AI calls |
 | [`src/scripts/game/indicators.py`](../src/scripts/game/indicators.py) | SMA/RSI/MACD/volume math and signal detection |
 | [`src/scripts/game/price_cache.py`](../src/scripts/game/price_cache.py) | In-memory price/indicator cache per ticker |
+| [`src/scripts/game/price_source.py`](../src/scripts/game/price_source.py) | Picks real vs simulated prices for a session; the surface `engine.py` talks to |
+| [`src/scripts/game/simulation.py`](../src/scripts/game/simulation.py) | Generates a session's private future and applies event shocks to it |
+| [`src/scripts/game/events.py`](../src/scripts/game/events.py) | Random market events: asks Gemini, falls back to a local headline, applies the shock |
+| [`src/scripts/ingestion/universes.py`](../src/scripts/ingestion/universes.py) | The ticker universe seed data (Nasdaq-100 + extras) |
+| [`src/scripts/ingestion/sync_universe.py`](../src/scripts/ingestion/sync_universe.py) | CLI to seed/refresh the `tickers` catalog |
 | [`src/scripts/database/database.py`](../src/scripts/database/database.py) | All TigerData (TimescaleDB) reads/writes |
 | [`src/scripts/database/schema.sql`](../src/scripts/database/schema.sql) | Table definitions |
 | [`src/scripts/api/nessie.py`](../src/scripts/api/nessie.py) | Nessie client (mock or real, same interface) |
@@ -298,11 +481,15 @@ Where each piece of this API actually lives, and the exact handler for each endp
 
 | Method | Path | Handler |
 |---|---|---|
-| GET | `/` | [`app.py:37`](../src/app.py#L37) `home()` |
-| GET | `/game/<session_id>` | [`app.py:46`](../src/app.py#L46) `game()` |
-| GET | `/api/tickers` | [`game_routes.py:25`](../src/routes/game_routes.py#L25) `tickers()` |
-| POST | `/api/session/start` | [`game_routes.py:30`](../src/routes/game_routes.py#L30) `start_session()` |
-| GET | `/api/session/<id>/state` | [`game_routes.py:45`](../src/routes/game_routes.py#L45) `session_state()` |
-| POST | `/api/session/<id>/advance` | [`game_routes.py:50`](../src/routes/game_routes.py#L50) `advance()` |
-| POST | `/api/session/<id>/trade` | [`game_routes.py:57`](../src/routes/game_routes.py#L57) `trade()` |
-| POST | `/api/session/<id>/predict` | [`game_routes.py:67`](../src/routes/game_routes.py#L67) `predict()` |
+| GET | `/` | [`app.py:51`](../src/app.py#L51) `home()` |
+| GET | `/game/<session_id>` | [`app.py:63`](../src/app.py#L63) `game()` |
+| GET | `/api/tickers` | [`game_routes.py:52`](../src/routes/game_routes.py#L52) `tickers()` |
+| GET | `/api/universe` | [`game_routes.py:57`](../src/routes/game_routes.py#L57) `universe()` |
+| POST | `/api/session/start` | [`game_routes.py:76`](../src/routes/game_routes.py#L76) `start_session()` |
+| GET | `/api/session/<id>/state` | [`game_routes.py:96`](../src/routes/game_routes.py#L96) `session_state()` |
+| POST | `/api/session/<id>/simulate` | [`game_routes.py:101`](../src/routes/game_routes.py#L101) `simulate()` |
+| GET | `/api/session/<id>/simulation` | [`game_routes.py:116`](../src/routes/game_routes.py#L116) `simulation_detail()` |
+| POST | `/api/session/<id>/shock` | [`game_routes.py:146`](../src/routes/game_routes.py#L146) `inject_shock()` |
+| POST | `/api/session/<id>/advance` | [`game_routes.py:185`](../src/routes/game_routes.py#L185) `advance()` |
+| POST | `/api/session/<id>/trade` | [`game_routes.py:192`](../src/routes/game_routes.py#L192) `trade()` |
+| POST | `/api/session/<id>/predict` | [`game_routes.py:202`](../src/routes/game_routes.py#L202) `predict()` |

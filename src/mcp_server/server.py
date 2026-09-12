@@ -66,6 +66,42 @@ def generate_market_event(session_id: str, ticker: str, as_of_date: str) -> dict
 
 
 @mcp.tool()
+def generate_market_shock(
+    session_id: str, ticker: str, as_of_date: str, scope: str = "ticker"
+) -> dict:
+    """A fictional, sized market event for the player's simulated future.
+
+    Unlike generate_market_event, the result carries decay_days so the caller can apply
+    the shock to the generated price series rather than just display the headline.
+
+    `scope` is "ticker", "sector" or "market", and decides how the prompt is framed: a
+    sector story has to be written to move every name the student holds in that sector,
+    which the tool works out from the session's own watchlist and the ticker catalog.
+    """
+    as_of = _parse(as_of_date)
+    ticker = ticker.upper()
+    scope = (scope or "ticker").strip().lower()
+    if scope not in ("ticker", "sector", "market"):
+        return {"error": f"unknown scope {scope!r}; expected ticker, sector or market"}
+
+    frame = _grounding_frame(ticker, as_of)
+    if frame.empty:
+        return {"error": f"no stored history for {ticker} through {as_of_date}"}
+
+    watchlist = database.session_tickers(session_id) or [ticker]
+    sectors = database.ticker_sectors(watchlist)
+    sector = sectors.get(ticker, {}).get("sector") or None
+    try:
+        shock = gemini_tools.generate_market_shock(
+            ticker, as_of, frame, scope=scope, sector=sector, peers=watchlist
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+    shock["session_id"] = session_id
+    return shock
+
+
+@mcp.tool()
 def log_ai_event(
     session_id: str, ticker: str, sim_date: str, event_type: str, payload: dict
 ) -> dict:

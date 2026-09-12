@@ -5,141 +5,317 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="{{ url_for('static', filename='prod/output.css') }}">
-    <title>{{ ticker }} &middot; Trading Teacher</title>
+    <title>Portfolio &middot; Trading Teacher</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
 </head>
 
-<body class="bg-slate-950 text-slate-100 min-h-screen" data-session-id="{{ session_id }}">
-    <div class="max-w-7xl mx-auto px-4 py-6">
+<body class="min-h-screen bg-ink text-white" data-session-id="{{ session_id }}">
+    <div class="mx-auto w-full max-w-[1800px] px-6 py-8 text-[17px] 2xl:px-10">
 
-        <header class="flex flex-wrap items-end justify-between gap-4 mb-6">
+        <header class="mb-8 flex flex-wrap items-end justify-between gap-8">
             <div>
-                <a href="/" class="text-xs text-slate-500 hover:text-slate-300">&larr; New session</a>
-                <h1 class="text-3xl font-bold tracking-tight">
-                    <span id="ticker-label">{{ ticker }}</span>
-                    <span class="text-slate-500 font-normal text-xl" id="sim-date">&mdash;</span>
+                <a href="/"
+                    class="inline-flex items-center gap-2 text-sm text-muted transition hover:text-white">
+                    <span class="flex h-6 w-6 items-center justify-center rounded-full border border-line-strong">&larr;</span>
+                    New session
+                </a>
+                <h1 class="mt-3 text-5xl font-bold tracking-tight">
+                    <span id="sim-date">&mdash;</span>
                 </h1>
+                <p id="mode-label" class="mt-2 text-sm text-dim">Replaying real market history</p>
             </div>
-            <div class="flex gap-6 text-right">
-                <div>
-                    <div class="text-xs uppercase tracking-wide text-slate-500">Cash</div>
-                    <div class="text-xl font-semibold tabular-nums" id="cash">&mdash;</div>
+
+            <div class="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:gap-5">
+                <div class="min-w-40 rounded-2xl border border-line bg-raised px-6 py-4">
+                    <div class="text-xs uppercase tracking-widest text-dim">Cash</div>
+                    <div id="cash" class="mt-1 text-3xl font-semibold tabular-nums">&mdash;</div>
                 </div>
-                <div>
-                    <div class="text-xs uppercase tracking-wide text-slate-500">Shares</div>
-                    <div class="text-xl font-semibold tabular-nums" id="shares">0</div>
+                <div class="min-w-40 rounded-2xl border border-line bg-raised px-6 py-4">
+                    <div class="text-xs uppercase tracking-widest text-dim">Positions</div>
+                    <div id="positions" class="mt-1 text-3xl font-semibold tabular-nums">0</div>
                 </div>
-                <div>
-                    <div class="text-xs uppercase tracking-wide text-slate-500">Net worth</div>
-                    <div class="text-xl font-semibold tabular-nums" id="net-worth">&mdash;</div>
+                <div class="min-w-40 rounded-2xl border border-line bg-raised px-6 py-4">
+                    <div class="text-xs uppercase tracking-widest text-dim">Net worth</div>
+                    <div id="net-worth" class="mt-1 text-3xl font-semibold tabular-nums">&mdash;</div>
                 </div>
-                <div>
-                    <div class="text-xs uppercase tracking-wide text-slate-500">Return</div>
-                    <div class="text-xl font-semibold tabular-nums" id="return-pct">&mdash;</div>
+                <div class="min-w-40 rounded-2xl border border-line bg-raised px-6 py-4">
+                    <div class="text-xs uppercase tracking-widest text-dim">Return</div>
+                    <div id="return-pct" class="mt-1 text-3xl font-semibold tabular-nums">&mdash;</div>
                 </div>
             </div>
         </header>
 
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <!-- Watchlist: every symbol in the basket, with its position size inline. Clicking
+             one moves the chart, trade panel and AI read onto it. -->
+        <div id="watchlist" class="mb-6 flex flex-wrap gap-3"></div>
 
-            <section class="lg:col-span-2 space-y-5">
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                    <div class="h-80"><canvas id="price-chart"></canvas></div>
+        <!-- Two tiers on purpose: 2/1 below 1280px, then the charts get a full 3 of 4
+             columns on wider screens. Dropping straight to one column at lg made medium
+             laptops less spread out than they were before. -->
+        <div class="grid grid-cols-1 gap-6 lg:grid-cols-3 xl:grid-cols-4">
+
+            <section class="space-y-6 lg:col-span-2 xl:col-span-3">
+                <div class="rounded-3xl border border-line bg-surface p-6">
+                    <div class="mb-4 flex flex-wrap items-baseline justify-between gap-3">
+                        <h2 class="text-lg font-semibold">
+                            <span id="focus-label" class="font-mono">&mdash;</span>
+                            <span id="focus-name" class="ml-2 font-normal text-dim"></span>
+                        </h2>
+                        <div class="flex items-baseline gap-3">
+                            <span class="text-sm text-dim">Last close</span>
+                            <span id="current-price" class="text-2xl font-semibold tabular-nums">&mdash;</span>
+                            <span id="current-change" class="text-lg font-semibold tabular-nums">&mdash;</span>
+                        </div>
+                    </div>
+                    <div class="h-[560px]"><canvas id="price-chart"></canvas></div>
                 </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                        <h2 class="text-sm font-semibold text-slate-300 mb-2">RSI (14)</h2>
-                        <div class="h-36"><canvas id="rsi-chart"></canvas></div>
+                <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                    <div class="rounded-3xl border border-line bg-surface p-6">
+                        <h2 class="mb-3 text-lg font-semibold">RSI (14)</h2>
+                        <div class="h-[300px]"><canvas id="rsi-chart"></canvas></div>
                     </div>
-                    <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                        <h2 class="text-sm font-semibold text-slate-300 mb-2">MACD (12, 26, 9)</h2>
-                        <div class="h-36"><canvas id="macd-chart"></canvas></div>
+                    <div class="rounded-3xl border border-line bg-surface p-6">
+                        <h2 class="mb-3 text-lg font-semibold">MACD (12, 26, 9)</h2>
+                        <div class="h-[300px]"><canvas id="macd-chart"></canvas></div>
                     </div>
                 </div>
 
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                    <div class="flex flex-wrap items-center gap-4">
+                <!-- The two portfolio views: what the basket did relative to itself, and
+                     what the account is actually worth. -->
+                <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                    <div class="rounded-3xl border border-line bg-surface p-6">
+                        <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+                            <h2 class="text-lg font-semibold">Basket, rebased to 100</h2>
+                            <span id="basket-window" class="text-xs text-dim"></span>
+                        </div>
+                        <div class="h-[300px]"><canvas id="basket-chart"></canvas></div>
+                        <p id="basket-note" class="mt-3 text-xs leading-relaxed text-dim"></p>
+                    </div>
+                    <div class="rounded-3xl border border-line bg-surface p-6">
+                        <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+                            <h2 class="text-lg font-semibold">Account equity</h2>
+                            <span id="equity-note" class="text-xs text-dim"></span>
+                        </div>
+                        <div class="h-[300px]"><canvas id="equity-chart"></canvas></div>
+                        <p class="mt-3 text-xs leading-relaxed text-dim">
+                            Cash plus open positions, day by day. This is the line that matters:
+                            a basket can be full of winners while the account is flat.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="rounded-3xl border border-line bg-surface p-6">
+                    <div class="flex flex-wrap items-center gap-6">
                         <button id="play-btn"
-                            class="bg-emerald-600 hover:bg-emerald-500 transition font-semibold rounded-lg px-5 py-2">
+                            class="rounded-full bg-brand px-8 py-3 text-lg font-semibold transition hover:bg-brand-soft">
                             Play
                         </button>
                         <button id="step-btn"
-                            class="bg-slate-700 hover:bg-slate-600 transition font-semibold rounded-lg px-5 py-2">
+                            class="rounded-full border border-line-strong px-8 py-3 text-lg font-semibold text-muted transition hover:border-muted hover:text-white">
                             Next day
                         </button>
-                        <div class="flex-1 min-w-52">
-                            <div class="flex justify-between text-xs text-slate-400 mb-1">
+                        <div class="min-w-72 flex-1">
+                            <div class="mb-2 flex justify-between text-sm text-muted">
                                 <span>Speed</span>
                                 <span id="speed-label">1x &middot; 1 day/sec</span>
                             </div>
                             <input type="range" id="speed" min="0" max="4" step="1" value="1"
-                                class="w-full accent-sky-500">
+                                class="w-full accent-brand">
                         </div>
                         <div id="status-pill"
-                            class="text-xs px-3 py-1 rounded-full bg-slate-800 text-slate-400">Paused</div>
+                            class="rounded-full border border-line px-4 py-1.5 text-sm text-muted">Paused</div>
                     </div>
                 </div>
             </section>
 
-            <section class="space-y-5">
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                    <h2 class="text-sm font-semibold text-slate-300 mb-3">Trade</h2>
-                    <div class="flex items-center gap-2 mb-3">
+            <section class="space-y-6">
+                <div class="rounded-3xl border border-line bg-surface p-6">
+                    <div class="mb-4 flex items-center justify-between gap-3">
+                        <h2 class="text-lg font-semibold">Trade</h2>
+                        <span id="trade-position" class="rounded-full border border-line px-3 py-1 text-xs text-muted">
+                            no position
+                        </span>
+                    </div>
+                    <label class="mb-3 block text-xs uppercase tracking-wide text-dim"
+                        for="trade-ticker">Symbol</label>
+                    <select id="trade-ticker"
+                        class="mb-4 w-full rounded-xl border border-line-strong bg-ink px-4 py-3 text-white outline-none focus:border-brand"></select>
+                    <div class="mb-4 flex items-center gap-3">
                         <input type="number" id="share-qty" value="10" min="0.01" step="1"
-                            class="w-24 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 tabular-nums">
-                        <span class="text-sm text-slate-400">shares @</span>
-                        <span class="text-sm font-semibold tabular-nums" id="current-price">&mdash;</span>
+                            class="w-32 rounded-xl border border-line-strong bg-ink px-4 py-3 tabular-nums text-white outline-none focus:border-brand">
+                        <span class="text-muted">shares @</span>
+                        <span id="trade-price" class="font-semibold tabular-nums">&mdash;</span>
                     </div>
-                    <div class="grid grid-cols-2 gap-2">
+                    <div class="grid grid-cols-2 gap-3">
                         <button id="buy-btn"
-                            class="bg-emerald-600 hover:bg-emerald-500 transition font-semibold rounded-lg py-2">Buy</button>
+                            class="rounded-xl bg-up/90 py-3 text-lg font-semibold text-ink transition hover:bg-up">Buy</button>
                         <button id="sell-btn"
-                            class="bg-rose-600 hover:bg-rose-500 transition font-semibold rounded-lg py-2">Sell</button>
+                            class="rounded-xl bg-down/90 py-3 text-lg font-semibold text-ink transition hover:bg-down">Sell</button>
                     </div>
-                    <p id="trade-error" class="text-xs text-rose-400 mt-2 hidden"></p>
-                    <div class="mt-3 pt-3 border-t border-slate-800 text-xs text-slate-400 space-y-1">
-                        <div class="flex justify-between"><span>Avg cost</span><span id="avg-cost" class="tabular-nums">&mdash;</span></div>
-                        <div class="flex justify-between"><span>Unrealized P/L</span><span id="unrealized" class="tabular-nums">&mdash;</span></div>
+                    <div class="mt-3 grid grid-cols-3 gap-2">
+                        <button data-qty="10"
+                            class="qty-chip rounded-lg border border-line py-2 text-sm text-muted transition hover:border-line-strong hover:text-white">10</button>
+                        <button data-qty="100"
+                            class="qty-chip rounded-lg border border-line py-2 text-sm text-muted transition hover:border-line-strong hover:text-white">100</button>
+                        <button data-qty="max"
+                            class="qty-chip rounded-lg border border-line py-2 text-sm text-muted transition hover:border-line-strong hover:text-white">Max</button>
                     </div>
+                    <p id="trade-error"
+                        class="mt-3 hidden rounded-xl border border-down/40 bg-down/10 p-3 text-sm text-down"></p>
+                    <p id="trade-summary" class="mt-4 border-t border-line pt-4 text-sm text-muted">
+                        You do not hold this symbol yet.
+                    </p>
                 </div>
 
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                    <div class="flex items-center justify-between mb-3">
-                        <h2 class="text-sm font-semibold text-slate-300">AI coach</h2>
+                <div class="rounded-3xl border border-line bg-surface p-6">
+                    <div class="mb-4 flex items-center justify-between gap-3">
+                        <h2 class="text-lg font-semibold">Holdings</h2>
+                        <button id="sell-all-btn"
+                            class="rounded-full border border-line px-3 py-1.5 text-xs text-muted transition hover:border-down/60 hover:text-down">
+                            Sell everything
+                        </button>
+                    </div>
+                    <!-- A list, not a table: five numeric columns do not fit the sidebar at
+                         the width this column actually gets, and they were colliding. -->
+                    <div id="holdings-body" class="space-y-2">
+                        <p class="py-2 text-sm text-dim">No open positions.</p>
+                    </div>
+                    <p class="mt-4 border-t border-line pt-4 text-xs leading-relaxed text-dim">
+                        Buy or sell straight from a holding. Trades fill at the close shown on the
+                        chart for the day you are standing on.
+                    </p>
+                </div>
+
+                <!-- The one card that has to stand out, in the mock's teal. -->
+                <div id="sim-panel"
+                    class="rounded-3xl border border-accent/30 bg-gradient-to-br from-accent/25 via-accent/10 to-transparent p-6">
+                    <div class="mb-4 flex items-center justify-between gap-3">
+                        <h2 class="text-lg font-semibold">Simulated future</h2>
+                        <span id="sim-state"
+                            class="rounded-full border border-line px-3 py-1 text-xs text-muted">real data only</span>
+                    </div>
+
+                    <div id="sim-off" class="space-y-4">
+                        <p class="text-sm leading-relaxed text-muted">
+                            Fork every symbol in the basket wherever the real data ends and keep
+                            trading into generated futures. They are private to this session, so
+                            the shared history stays real.
+                        </p>
+                        <button id="sim-fork-btn"
+                            class="w-full rounded-xl bg-accent py-3 font-semibold text-ink transition hover:bg-accent-soft">
+                            Generate a future
+                        </button>
+                    </div>
+
+                    <div id="sim-on" class="hidden space-y-4">
+                        <dl class="grid grid-cols-2 gap-3 text-sm">
+                            <div>
+                                <dt class="text-xs uppercase tracking-wide text-dim">Forks at</dt>
+                                <dd id="sim-fork" class="tabular-nums">&mdash;</dd>
+                            </div>
+                            <div>
+                                <dt class="text-xs uppercase tracking-wide text-dim">Generated days</dt>
+                                <dd id="sim-bars" class="tabular-nums">&mdash;</dd>
+                            </div>
+                            <div>
+                                <dt class="text-xs uppercase tracking-wide text-dim">Annual drift</dt>
+                                <dd id="sim-drift" class="tabular-nums">&mdash;</dd>
+                            </div>
+                            <div>
+                                <dt class="text-xs uppercase tracking-wide text-dim">Annual vol</dt>
+                                <dd id="sim-vol" class="tabular-nums">&mdash;</dd>
+                            </div>
+                        </dl>
+                        <p id="sim-others" class="text-xs text-muted"></p>
+
+                        <button id="sim-extend-btn"
+                            class="w-full rounded-lg border border-line-strong py-2.5 text-sm font-semibold text-muted transition hover:border-muted hover:text-white">
+                            Add another 252 days
+                        </button>
+
+                        <form id="shock-form" class="space-y-3 border-t border-line/60 pt-4">
+                            <p class="text-xs uppercase tracking-wide text-dim">Push a market event</p>
+                            <input id="shock-headline" type="text" placeholder="Headline the market reacts to"
+                                class="w-full rounded-xl border border-line-strong bg-ink px-4 py-2.5 text-sm text-white outline-none placeholder:text-dim focus:border-brand">
+                            <div class="grid grid-cols-2 gap-3">
+                                <label class="text-xs text-muted">
+                                    Reaches
+                                    <select id="shock-scope"
+                                        class="mt-1 w-full rounded-xl border border-line-strong bg-ink px-3 py-2.5 text-sm text-white outline-none focus:border-brand">
+                                        <option value="ticker">This symbol only</option>
+                                        <option value="sector">Every holding in its sector</option>
+                                        <option value="market">The whole basket</option>
+                                    </select>
+                                </label>
+                                <label class="text-xs text-muted">
+                                    Headline about
+                                    <span id="shock-ticker"
+                                        class="mt-1 block rounded-xl border border-line px-3 py-2.5 font-mono text-sm">&mdash;</span>
+                                </label>
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <label class="text-xs text-muted">
+                                    Sentiment
+                                    <input id="shock-sentiment" type="number" min="-1" max="1" step="0.05" value="0.6"
+                                        class="mt-1 w-full rounded-xl border border-line-strong bg-ink px-4 py-2.5 text-sm tabular-nums text-white outline-none focus:border-brand">
+                                </label>
+                                <label class="text-xs text-muted">
+                                    Magnitude
+                                    <input id="shock-magnitude" type="number" min="0" max="1" step="0.05" value="0.5"
+                                        class="mt-1 w-full rounded-xl border border-line-strong bg-ink px-4 py-2.5 text-sm tabular-nums text-white outline-none focus:border-brand">
+                                </label>
+                            </div>
+                            <button id="shock-btn"
+                                class="w-full rounded-xl bg-brand py-2.5 text-sm font-semibold transition hover:bg-brand-soft">
+                                Push event into the future
+                            </button>
+                            <p id="shock-error" class="hidden text-xs text-down"></p>
+                        </form>
+                    </div>
+                    <p id="sim-error"
+                        class="mt-3 hidden rounded-xl border border-down/40 bg-down/10 p-3 text-sm text-down"></p>
+                </div>
+
+                <div class="rounded-3xl border border-line bg-surface p-6">
+                    <div class="mb-4 flex items-center justify-between gap-3">
+                        <h2 class="text-lg font-semibold">AI coach</h2>
                         <button id="predict-btn"
-                            class="text-xs bg-violet-600 hover:bg-violet-500 transition rounded-lg px-3 py-1.5 font-semibold">
+                            class="rounded-full bg-brand px-4 py-2 text-sm font-semibold transition hover:bg-brand-soft">
                             Ask for a read
                         </button>
                     </div>
-                    <div id="ai-feed" class="space-y-3 max-h-96 overflow-y-auto text-sm">
-                        <p class="text-slate-500 text-xs">Predictions and market chatter show up here.</p>
+                    <div id="ai-status"
+                        class="mb-4 hidden rounded-xl border border-warn/40 bg-warn/10 p-3 text-sm text-warn"></div>
+                    <div id="ai-error"
+                        class="mb-4 hidden rounded-xl border border-down/40 bg-down/10 p-3 text-sm text-down"></div>
+                    <div id="ai-feed" class="max-h-[28rem] space-y-4 overflow-y-auto text-sm">
+                        <p class="text-xs text-dim">Predictions, headlines and shocks show up here.</p>
                     </div>
                 </div>
 
-                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-                    <h2 class="text-sm font-semibold text-slate-300 mb-3">Signals seen</h2>
-                    <div id="signal-log" class="space-y-2 max-h-64 overflow-y-auto text-sm">
-                        <p class="text-slate-500 text-xs">Advance the clock to spot signals.</p>
+                <div class="rounded-3xl border border-line bg-surface p-6">
+                    <h2 class="mb-4 text-lg font-semibold">Signals seen</h2>
+                    <div id="signal-log" class="max-h-[24rem] space-y-3 overflow-y-auto text-sm">
+                        <p class="text-xs text-dim">Advance the clock to spot signals.</p>
                     </div>
                 </div>
             </section>
         </div>
     </div>
 
-    <div id="toasts" class="fixed bottom-6 right-6 space-y-3 w-80 z-50"></div>
+    <div id="toasts" class="fixed bottom-8 right-8 z-50 w-96 space-y-4"></div>
 
-    <div id="summary-overlay"
-        class="fixed inset-0 bg-slate-950/90 hidden items-center justify-center p-4 z-50">
-        <div class="bg-slate-900 border border-slate-700 rounded-2xl p-8 max-w-md w-full text-center">
-            <h2 class="text-2xl font-bold mb-2">Session complete</h2>
-            <p class="text-slate-400 text-sm mb-6" id="summary-range"></p>
-            <div class="text-5xl font-bold tabular-nums mb-2" id="summary-return"></div>
-            <p class="text-slate-400 text-sm mb-6">
+    <div id="summary-overlay" class="fixed inset-0 z-50 hidden items-center justify-center bg-ink/90 p-6">
+        <div class="w-full max-w-lg rounded-3xl border border-line bg-surface p-10 text-center">
+            <h2 class="mb-3 text-3xl font-bold">Run complete</h2>
+            <p id="summary-range" class="mb-8 text-muted"></p>
+            <div id="summary-return" class="mb-3 text-6xl font-bold tabular-nums"></div>
+            <p class="mb-8 text-muted">
                 Net worth <span id="summary-net"></span> from <span id="summary-start"></span> starting cash
             </p>
             <a href="/"
-                class="inline-block bg-sky-600 hover:bg-sky-500 transition font-semibold rounded-lg px-6 py-3">
+                class="inline-block rounded-full bg-brand px-8 py-3 font-semibold transition hover:bg-brand-soft">
                 Trade another stretch
             </a>
         </div>
