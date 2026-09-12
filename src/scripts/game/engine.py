@@ -321,10 +321,13 @@ def _least_covered(watchlist: list[str], event_log: list[dict], event_type: str)
 
 
 def _run_ai(kind: str, session_id: str, ticker: str, sim_date: date) -> None:
-    from scripts.api import gemini_mcp_client
-
     key = (session_id, kind, ticker)
     try:
+        # Imported inside the try on purpose: _schedule_ai has already marked this key
+        # in-flight, and an import that raised outside would leave it there forever,
+        # silently disabling every future event of this kind for the whole process.
+        from scripts.api import gemini_mcp_client
+
         if kind == "PREDICTION":
             gemini_mcp_client.predict(session_id, ticker, sim_date)
         elif kind == "MARKET_SHOCK":
@@ -488,6 +491,10 @@ def execute_trade(
         quantity = Decimal(str(shares))
     except Exception:
         raise GameError("shares must be a number")
+    # Not just tidiness: an absurd or non-finite size survives the multiplication but blows
+    # up in quantize() as a decimal.InvalidOperation, which reached the player as a 500.
+    if not quantity.is_finite() or quantity > MAX_TRADE_SHARES:
+        raise GameError(f"shares must be between 0 and {MAX_TRADE_SHARES:,}")
     if quantity <= 0:
         raise GameError("shares must be greater than zero")
 
