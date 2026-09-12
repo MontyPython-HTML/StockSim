@@ -231,11 +231,14 @@ function shockCard(entry) {
     const scope = (e.scope || 'ticker').toLowerCase();
     // When a story is wider than one company, say so and name the names it hit: that is
     // the whole teaching point of a sector event.
+    // The date a story broke lives on the feed entry; the payload carries it as `as_of`.
+    // Reading `payload.sim_date` printed "undefined" in the card header.
+    const asOf = entry.sim_date || e.as_of || '';
     const label = scope === 'market'
-        ? `Market-wide · ${e.sim_date}`
+        ? `Market-wide · ${asOf}`
         : scope === 'sector'
-            ? `Sector · ${e.sector || 'sector-wide'} · ${e.sim_date}`
-            : `Market event · ${entry.ticker} · ${e.sim_date}`;
+            ? `Sector · ${e.sector || 'sector-wide'} · ${asOf}`
+            : `Market event · ${entry.ticker} · ${asOf}`;
     const hit = (e.affected_tickers || [entry.ticker]);
     const node = document.createElement('div');
     node.className = `rounded-xl border p-4 ${border}`;
