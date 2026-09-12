@@ -1,6 +1,8 @@
 from datetime import date, datetime, timedelta
+from uuid import UUID
 
 from flask import Blueprint, jsonify, request
+from werkzeug.exceptions import HTTPException
 
 import config
 from scripts.api import gemini_mcp_client
@@ -9,6 +11,34 @@ from scripts.game import engine, events, performance, price_source
 from scripts.game.engine import AIUnavailable, GameError
 
 api = Blueprint("api", __name__, url_prefix="/api")
+
+
+@api.before_request
+def _reject_malformed_session_id():
+    """A malformed id is a missing session, not a driver crash.
+
+    Every /session/<session_id> route hands the id straight to a query, and the column is
+    a uuid, so "not-a-uuid" made psycopg2 raise InvalidTextRepresentation -- an HTML 500
+    that the front end cannot even parse as JSON.
+    """
+    session_id = (request.view_args or {}).get("session_id")
+    if session_id is not None:
+        try:
+            UUID(str(session_id))
+        except (ValueError, AttributeError, TypeError):
+            raise GameError("Session not found")
+
+
+@api.app_errorhandler(HTTPException)
+def _json_http_error(error: HTTPException):
+    """Answer API errors in JSON; leave the HTML pages alone.
+
+    The front end parses every response with JSON.parse, so an HTML error page surfaces as
+    a baffling syntax error instead of the actual problem.
+    """
+    if not request.path.startswith("/api/"):
+        return error
+    return jsonify({"error": error.description or error.name}), error.code
 
 
 # --- request parsing ------------------------------------------------------
@@ -50,6 +80,20 @@ def _optional_float(value, field: str) -> float | None:
 
 def _focus_argument(body: dict) -> str | None:
     return (request.args.get("focus") or body.get("focus") or "").strip().upper() or None
+
+
+def _day_count(value) -> int:
+    """Days to move the clock, validated like every other numeric field.
+
+    `int(body.get("days", 1))` let a non-numeric string through as a 500, and silently
+    turned days=0 into a one-day advance - the opposite of what was asked for.
+    """
+    days = _optional_int(value, "days")
+    if days is None:
+        return 1
+    if days < 1:
+        raise GameError("days must be at least 1")
+    return days
 
 
 # --- errors ---------------------------------------------------------------
@@ -170,7 +214,7 @@ def advance(session_id: str):
     return jsonify(
         engine.advance_day(
             session_id,
-            days=int(body.get("days", 1)),
+            days=_day_count(body.get("days")),
             with_ai=body.get("with_ai", True),
             focus=_focus_argument(body),
         )

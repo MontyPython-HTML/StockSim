@@ -502,15 +502,16 @@ Where each piece of this API actually lives, and the exact handler for each endp
 
 | Method | Path | Handler |
 |---|---|---|
-| GET | `/` | [`app.py:51`](../src/app.py#L51) `home()` |
-| GET | `/game/<session_id>` | [`app.py:63`](../src/app.py#L63) `game()` |
-| GET | `/api/tickers` | [`game_routes.py:52`](../src/routes/game_routes.py#L52) `tickers()` |
-| GET | `/api/universe` | [`game_routes.py:57`](../src/routes/game_routes.py#L57) `universe()` |
-| POST | `/api/session/start` | [`game_routes.py:76`](../src/routes/game_routes.py#L76) `start_session()` |
-| GET | `/api/session/<id>/state` | [`game_routes.py:96`](../src/routes/game_routes.py#L96) `session_state()` |
-| POST | `/api/session/<id>/simulate` | [`game_routes.py:101`](../src/routes/game_routes.py#L101) `simulate()` |
-| GET | `/api/session/<id>/simulation` | [`game_routes.py:116`](../src/routes/game_routes.py#L116) `simulation_detail()` |
-| POST | `/api/session/<id>/shock` | [`game_routes.py:146`](../src/routes/game_routes.py#L146) `inject_shock()` |
-| POST | `/api/session/<id>/advance` | [`game_routes.py:185`](../src/routes/game_routes.py#L185) `advance()` |
-| POST | `/api/session/<id>/trade` | [`game_routes.py:192`](../src/routes/game_routes.py#L192) `trade()` |
-| POST | `/api/session/<id>/predict` | [`game_routes.py:202`](../src/routes/game_routes.py#L202) `predict()` |
+| GET | `/` | [`app.py:84`](../src/app.py#L84) `home()` |
+| GET | `/game/<session_id>` | [`app.py:96`](../src/app.py#L96) `game()` |
+| GET | `/api/universe` | [`game_routes.py:74`](../src/routes/game_routes.py#L74) `universe()` |
+| GET | `/api/ai/status` | [`game_routes.py:93`](../src/routes/game_routes.py#L93) `ai_status()` |
+| POST | `/api/session/start` | [`game_routes.py:123`](../src/routes/game_routes.py#L123) `start_session()` |
+| GET | `/api/session/<id>/state` | [`game_routes.py:140`](../src/routes/game_routes.py#L140) `session_state()` |
+| GET | `/api/session/<id>/basket` | [`game_routes.py:152`](../src/routes/game_routes.py#L152) `session_basket()` |
+| POST | `/api/session/<id>/advance` | [`game_routes.py:168`](../src/routes/game_routes.py#L168) `advance()` |
+| POST | `/api/session/<id>/trade` | [`game_routes.py:181`](../src/routes/game_routes.py#L181) `trade()` |
+| POST | `/api/session/<id>/predict` | [`game_routes.py:195`](../src/routes/game_routes.py#L195) `predict()` |
+| POST | `/api/session/<id>/simulate` | [`game_routes.py:204`](../src/routes/game_routes.py#L204) `simulate()` |
+| GET | `/api/session/<id>/simulation` | [`game_routes.py:220`](../src/routes/game_routes.py#L220) `simulation_detail()` |
+| POST | `/api/session/<id>/shock` | [`game_routes.py:258`](../src/routes/game_routes.py#L258) `inject_shock()` |
