@@ -560,3 +560,86 @@ Where each piece of this API actually lives, and the exact handler for each endp
 | POST | `/api/session/<id>/simulate` | [`game_routes.py:247`](../src/routes/game_routes.py#L247) `simulate()` |
 | GET | `/api/session/<id>/simulation` | [`game_routes.py:263`](../src/routes/game_routes.py#L263) `simulation_detail()` |
 | POST | `/api/session/<id>/shock` | [`game_routes.py:301`](../src/routes/game_routes.py#L301) `inject_shock()` |
+
+---
+
+## Bills and the bank account
+
+Starting cash comes from a Nessie account, and so do that account's standing orders. As the
+clock passes each bill's day of the month the money leaves the same cash balance the player
+trades with — which can push it negative.
+
+Relevant files: [`src/scripts/game/expenses.py`](../src/scripts/game/expenses.py) (the rules),
+[`src/scripts/api/nessie.py`](../src/scripts/api/nessie.py) (the client),
+[`src/scripts/ingestion/seed_nessie.py`](../src/scripts/ingestion/seed_nessie.py) (sandbox setup).
+
+**Nessie base URL is `https://api.nessieisreal.com`** — the API refuses connections on
+port 80, which is what made it look like the service was down.
+
+Seed an empty sandbox (creates a customer, a funding account and eight recurring bills):
+
+```bash
+uv run python -m scripts.ingestion.seed_nessie
+```
+
+Then set `NESSIE_USE_MOCK=false` and `NESSIE_DEFAULT_CUSTOMER_ID=<printed id>` in `.env`.
+With `NESSIE_USE_MOCK=true` the same shapes are served from
+[`src/temp/nessie_mock_data.json`](../src/temp/nessie_mock_data.json), bills included.
+
+### New fields on the session state object
+
+```json
+{
+  "portfolio": {
+    "bills_paid": 3739.0,
+    "trading_return_pct": 0.0,
+    "total_return_pct": -37.39,
+    "overdrawn": false
+  },
+  "expenses": {
+    "bill_count": 8,
+    "monthly_total": 2769.0,
+    "paid_to_date": 3739.0,
+    "months_of_runway": 2.3,
+    "overdrawn": false,
+    "upcoming": [
+      { "label": "Rent", "payee": "Sunrise Apartments",
+        "due_date": "2023-03-01", "amount": 1450.0, "days_away": 14 }
+    ],
+    "charged": [
+      { "label": "Utilities", "payee": "City Power & Light",
+        "due_date": "2023-01-05", "amount": 180.0, "cash_after": 9820.0 }
+    ]
+  }
+}
+```
+
+- `total_return_pct` is the account: trading result **minus** bills. It is the number that
+  decides whether the player went broke.
+- `trading_return_pct` adds the bills back, so good stock picking still reads as good stock
+  picking. Showing both is the point — a run can be `+30%` at trading and `-61%` overdrawn.
+- `months_of_runway` is cash divided by the monthly bill total; negative means overdrawn.
+
+`POST /api/session/<id>/advance` additionally returns **`charged`** — the bills taken on this
+tick, each with the cash left after it:
+
+```json
+{ "charged": [ { "label": "Rent", "due_date": "2023-02-01",
+                 "amount": 1450.0, "cash_after": -80.32 } ] }
+```
+
+Charges are idempotent: `session_expenses` is unique on `(session_id, bill_id, due_date)`, so
+re-advancing over a day that already paid rent never pays it twice.
+
+## Teacher mode and the walkthrough
+
+Both are front-end only — no extra endpoints. `advance` already reports a queued lesson in
+`pending_ai` as `{"kind": "PATTERN_LESSON", "ticker", "pattern", "date"}`. When Teacher mode
+is on, [`game.js`](../src/static/js/game.js) pauses the clock on that tick, opens the coach
+card in a waiting state, and polls `GET /state` until the matching `PATTERN_LESSON` lands in
+`ai_feed`. If the AI never answers it gives up after 30s and lets the player carry on; if
+Gemini is unreachable the lesson still arrives from the built-in syllabus
+([`patterns.py`](../src/scripts/game/patterns.py)) with `source: "offline"`.
+
+The walkthrough is a nine-step tour over the real panels, shown automatically on a first
+visit and re-openable from **How this works** in the header.

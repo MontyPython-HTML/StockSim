@@ -10,7 +10,7 @@ trade ledger - so nothing here needs a snapshot table and a session that predate
 code still gets a full curve.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from scripts.game import price_source
 
@@ -25,6 +25,10 @@ def _as_date(value) -> date:
 
 def _iso(value) -> str:
     return _as_date(value).isoformat()
+
+
+def _previous_day(day: str) -> str:
+    return (_as_date(day) - timedelta(days=1)).isoformat()
 
 
 def _rebased(frame) -> list[dict]:
@@ -77,12 +81,20 @@ def _bisect_right(stamps: list[str], day: str) -> int:
     return low
 
 
-def equity_curve(session: dict, trades: list[dict], frames: dict, dates: list[str]) -> list[dict]:
-    """Net worth per session date, rebuilt from the trade ledger.
+def equity_curve(
+    session: dict,
+    trades: list[dict],
+    frames: dict,
+    dates: list[str],
+    expenses: list[dict] | None = None,
+) -> list[dict]:
+    """Net worth per session date, rebuilt from the trade ledger and the bank's charges.
 
     Holdings only change when a trade happens, so the account's value on any day is the
     running cash plus what was held that day at that day's close. That makes the curve
-    exact for any window, including ones the player has already scrolled past.
+    exact for any window, including ones the player has already scrolled past. Bills are
+    replayed the same way - leave them out and the curve drifts away from the cash balance
+    on screen by exactly the rent.
     """
     if not dates:
         return []
@@ -95,6 +107,22 @@ def equity_curve(session: dict, trades: list[dict], frames: dict, dates: list[st
     by_date: dict[str, list[dict]] = {}
     for trade in ordered:
         by_date.setdefault(_iso(trade["trade_date"]), []).append(trade)
+
+    # Bills fall on calendar days, and the curve is drawn on trading days. Keying charges
+    # by date and looking each day up would silently drop every bill that landed on a
+    # weekend, so they are drained in date order onto the first plotted day at or after
+    # them instead.
+    charges = sorted(
+        ((_iso(charge["due_date"]), float(charge["amount"])) for charge in expenses or []),
+        key=lambda row: row[0],
+    )
+    charge_index = 0
+
+    def drain_charges(through: str) -> None:
+        nonlocal cash, charge_index
+        while charge_index < len(charges) and charges[charge_index][0] <= through:
+            cash -= charges[charge_index][1]
+            charge_index += 1
 
     def settle(day: str) -> None:
         nonlocal cash
@@ -110,12 +138,15 @@ def equity_curve(session: dict, trades: list[dict], frames: dict, dates: list[st
                 cash += shares * price
 
     # Everything that happened before the window still counts toward what is held today.
-    for day in [d for d in by_date if d < dates[0]]:
-        settle(day)
+    for day in sorted(by_date):
+        if day < dates[0]:
+            settle(day)
+    drain_charges(_previous_day(dates[0]))
 
     curve: list[dict] = []
     for day in dates:
         settle(day)
+        drain_charges(day)
         value = 0.0
         for ticker, held in holds.items():
             if held:
@@ -134,7 +165,11 @@ def equity_curve(session: dict, trades: list[dict], frames: dict, dates: list[st
 
 
 def basket(
-    session: dict, trades: list[dict], window_days: int | None = None, tickers: list[str] | None = None
+    session: dict,
+    trades: list[dict],
+    window_days: int | None = None,
+    tickers: list[str] | None = None,
+    expenses: list[dict] | None = None,
 ) -> dict:
     """Every watched symbol rebased to 100, plus the account's equity over the same window."""
     window = int(window_days or DEFAULT_BASKET_WINDOW)
@@ -175,6 +210,6 @@ def basket(
         "sim_date": sim_date.isoformat(),
         "window_days": window,
         "series": series,
-        "equity": equity_curve(session, trades, frames, axis),
+        "equity": equity_curve(session, trades, frames, axis, expenses),
         "starting_cash": float(session["starting_cash"]),
     }
