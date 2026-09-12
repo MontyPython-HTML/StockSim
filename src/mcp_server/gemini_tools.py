@@ -10,8 +10,8 @@ import config
 
 CONTEXT_ROWS = 30
 REQUEST_TIMEOUT_MS = 10000
-MAX_ATTEMPTS = 3
-FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-flash-latest"]
+MAX_ATTEMPTS = 4
+FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash"]
 
 DISCLAIMER = "Simulated teaching output. Not financial advice."
 
