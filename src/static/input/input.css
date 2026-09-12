@@ -1,3 +1,78 @@
 @import "tailwindcss";
 @source "../../templates";
 @source "../js";
+
+/* Palette taken from the product mock: near-black page, one shade lifted for cards,
+   thin grey outlines instead of fills, a single vivid blue for action and a teal for
+   the one card that needs to stand out. Declared as theme tokens so the templates read
+   `bg-surface` / `text-muted` rather than a wall of hex literals. */
+@theme {
+    --color-ink: #08090a;
+    --color-ink-soft: #0f1113;
+    --color-surface: #16181c;
+    --color-raised: #1d2025;
+    --color-line: #262a30;
+    --color-line-strong: #3c4149;
+    --color-muted: #9aa3b0;
+    --color-dim: #6b7280;
+    --color-brand: #2563eb;
+    --color-brand-soft: #3b82f6;
+    --color-accent: #14b8a6;
+    --color-accent-soft: #2dd4bf;
+    --color-glow: #22d3ee;
+    --color-up: #2dd4bf;
+    --color-down: #fb7185;
+    --color-warn: #f0b429;
+}
+
+/* Native controls (date pickers, scrollbars) follow this, otherwise they render as
+   light chrome punched into a near-black page. */
+html {
+    color-scheme: dark;
+}
+
+/* A checkbox that matches the palette. The native control ignores background and border
+   entirely without appearance-none, and a white square is the one thing on the page that
+   does not belong to the design. */
+@layer components {
+    .tick {
+        appearance: none;
+        display: grid;
+        place-content: center;
+        flex: none;
+        width: 1.05rem;
+        height: 1.05rem;
+        border: 1px solid var(--color-line-strong);
+        border-radius: 0.35rem;
+        background: transparent;
+        transition: background 120ms ease, border-color 120ms ease;
+    }
+
+    .tick:hover {
+        border-color: var(--color-muted);
+    }
+
+    .tick::after {
+        content: "";
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 2px;
+        background: #ffffff;
+        transform: scale(0);
+        transition: transform 100ms ease;
+    }
+
+    .tick:checked {
+        background: var(--color-brand);
+        border-color: var(--color-brand);
+    }
+
+    .tick:checked::after {
+        transform: scale(1);
+    }
+
+    .tick:disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+    }
+}
