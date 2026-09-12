@@ -3,7 +3,7 @@
 import json
 import threading
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable
@@ -284,6 +284,35 @@ def record_trade(
         return cur.fetchone()
 
 
+def _as_date(value) -> date:
+    """ISO string (from JSON) or date/datetime (from the driver) -> date."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return datetime.strptime(str(value), "%Y-%m-%d").date()
+
+
+def _revive_dates(bundle: dict) -> dict:
+    """Put the DATE columns back to `date` after the JSON trip.
+
+    The bundle's whole point is one query instead of five, and row_to_json/json_agg are
+    what buy that - at the cost of column types: dates arrive as ISO strings. Restoring
+    them here keeps "sim_date is a date" true for every reader, rather than requiring
+    each one to remember to parse it (a date comparison against a string raises
+    TypeError, so forgetting 500s the whole tick).
+    """
+    session = bundle.get("session") or {}
+    for field in ("start_date", "end_date", "sim_date"):
+        if session.get(field):
+            session[field] = _as_date(session[field])
+    for event in bundle.get("events") or []:
+        event["sim_date"] = _as_date(event["sim_date"])
+    for trade in bundle.get("trades") or []:
+        trade["trade_date"] = _as_date(trade["trade_date"])
+    return bundle
+
+
 def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
     """Session, watchlist, holdings, trades and AI events in one round trip.
 
@@ -313,7 +342,7 @@ def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
             """,
             {"sid": session_id, "limit": event_limit},
         )
-        return cur.fetchone()
+        return _revive_dates(cur.fetchone())
 
 
 # --- MCP event log --------------------------------------------------------

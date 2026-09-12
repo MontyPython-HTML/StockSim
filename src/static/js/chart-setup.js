@@ -28,9 +28,30 @@ Chart.defaults.color = TICK;
 Chart.defaults.font.family = 'ui-sans-serif, system-ui, sans-serif';
 Chart.defaults.animation = false;
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// Full ISO dates are ~10 characters and collide on a 300px panel once the y-axis takes
+// its share of the width. "Nov 21" carries the same information and never overlaps.
+function shortDate(value) {
+    const raw = String(this.getLabelForValue ? this.getLabelForValue(value) : value);
+    const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+    return iso ? `${MONTHS[Number(iso[2]) - 1]} ${iso[1].slice(2)}` : raw;
+}
+
+function compactMoney(value) {
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) return '';
+    if (Math.abs(amount) >= 10000) return `${Math.round(amount / 1000)}k`;
+    if (Math.abs(amount) >= 1000) return `${(amount / 1000).toFixed(1)}k`;
+    return amount.toFixed(0);
+}
+
 function baseScales(extra = {}) {
     return {
-        x: { grid: { color: GRID }, ticks: { maxTicksLimit: 8, maxRotation: 0 } },
+        x: {
+            grid: { color: GRID },
+            ticks: { maxTicksLimit: 7, maxRotation: 0, autoSkip: true, callback: shortDate },
+        },
         y: { grid: { color: GRID }, ticks: { maxTicksLimit: 6 } },
         ...extra,
     };
@@ -151,8 +172,13 @@ function createEquityChart(canvas) {
         options: {
             responsive: true, maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
-            plugins: { legend: { display: false } },
-            scales: baseScales(),
+            plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: { label: (item) => `${item.dataset.label}: ${item.parsed.y?.toLocaleString()}` } },
+            },
+            // Dollar values are five or six digits wide, which eats the axis room the date
+            // labels need; "10.0k" keeps both readable.
+            scales: baseScales({ y: { grid: { color: GRID }, ticks: { maxTicksLimit: 5, callback: compactMoney } } }),
         },
     });
 }

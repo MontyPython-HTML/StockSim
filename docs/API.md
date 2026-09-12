@@ -368,6 +368,8 @@ or when the API is slow.
 **Request body**
 ```json
 {
+  "ticker": "NVDA",
+  "scope": "sector",
   "headline": "NVDA lands a multi-billion dollar sovereign AI deal",
   "summary": "optional one-liner",
   "sentiment": 0.85,
@@ -378,15 +380,33 @@ or when the API is slow.
 ```
 - `sentiment` — required, `-1`..`1` (bearish..bullish).
 - `magnitude` — required, `0`..`1`.
+- `scope` — how wide the story lands. Defaults to `ticker`.
+  - `ticker` — only the named symbol moves.
+  - `sector` — every symbol in the session's basket filed under the same sector as
+    `ticker` moves (the sector is looked up from the `tickers` catalog; override it by
+    passing `sector` explicitly).
+  - `market` — the whole basket moves.
 - `decay_days` — optional, default `10`.
+
+Each affected symbol is repriced by the same story with a stable per-symbol multiplier
+(`SHOCK_PEER_SPREAD`, ±45% of magnitude by default), so a sector move is correlated
+without every chart being a copy of the same candle. Real (unforked) symbols are skipped:
+shared history is never rewritten.
 
 **Response `201`**
 ```json
 {
-  "ticker": "NVDA", "headline": "...", "sentiment": 0.85, "magnitude": 0.8,
+  "ticker": "NVDA", "scope": "sector", "sector": "Technology",
+  "headline": "...", "sentiment": 0.85, "magnitude": 0.8,
   "decay_days": 8, "source": "manual", "fictional": true,
-  "applied": true, "bars_affected": 244, "event_id": 118
+  "applied": true, "bars_affected": 244, "event_id": 118,
+  "affected_tickers": ["NVDA", "AAPL", "AMD"],
+  "affected": [
+    { "ticker": "NVDA", "bars_affected": 244, "magnitude": 0.62 },
+    { "ticker": "AAPL", "bars_affected": 244, "magnitude": 0.81 }
+  ]
 }
+```
 ```
 
 How the shock lands: `sentiment x magnitude x SHOCK_IMPACT_SCALE` is the total repricing
@@ -418,6 +438,7 @@ bar also gets a volume spike.
 | POST   | `/api/session/<id>/simulate`       | Fork onto a generated future               |
 | GET    | `/api/session/<id>/simulation`     | Fork parameters, bounds, applied shocks    |
 | POST   | `/api/session/<id>/shock`          | Inject one specific market event           |
+| GET    | `/api/session/<id>/basket`         | Rebased basket comparison + equity curve   |
 
 ## curl examples
 
