@@ -206,6 +206,7 @@ def session_basket(session_id: str):
             _optional_int(request.args.get("window"), "window"),
             # The watchlist is already in the bundle this request just loaded.
             bundle.get("watchlist"),
+            bundle.get("expenses"),
         )
     )
 

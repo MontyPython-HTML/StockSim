@@ -34,7 +34,9 @@ GEMINI_API_KEYS = [
 ]
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
-NESSIE_BASE_URL = os.getenv("NESSIE_BASE_URL", "http://api.nessieisreal.com").rstrip("/")
+# https, not http: the API refuses connections on port 80, which is what made it look
+# like the service was down.
+NESSIE_BASE_URL = os.getenv("NESSIE_BASE_URL", "https://api.nessieisreal.com").rstrip("/")
 NESSIE_API_KEY = os.getenv("NESSIE_API_KEY", "")
 NESSIE_USE_MOCK = os.getenv("NESSIE_USE_MOCK", "true").lower() == "true"
 NESSIE_DEFAULT_CUSTOMER_ID = os.getenv("NESSIE_DEFAULT_CUSTOMER_ID", "mock-customer-001")
