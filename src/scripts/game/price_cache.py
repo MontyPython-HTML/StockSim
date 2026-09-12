@@ -44,7 +44,10 @@ def load(ticker: str) -> pd.DataFrame:
     cached = _frames.get(ticker)
     if cached is not None:
         with _lock:
-            _frames.move_to_end(ticker)
+            # Re-checked because the lookup above is outside the lock: another thread can
+            # evict this ticker in between, and move_to_end on a missing key raises.
+            if ticker in _frames:
+                _frames.move_to_end(ticker)
         return cached
     with _lock_for(ticker):
         cached = _frames.get(ticker)
@@ -60,15 +63,26 @@ def load(ticker: str) -> pd.DataFrame:
         return frame
 
 
+def is_cached(ticker: str) -> bool:
+    """Whether a frame is already held. A hint for prefetch, not a guarantee."""
+    return ticker.upper() in _frames
+
+
 def prefetch(tickers) -> None:
-    """Warm several tickers at once, ignoring duplicates and anything that has no rows."""
+    """Warm several tickers at once, ignoring duplicates and anything that has no rows.
+
+    Only the misses are fetched: this runs at the top of every clock tick, and a tick on a
+    warm session has nothing to load. Spinning up a pool to have four threads look in a
+    dictionary and then joining them was pure per-tick overhead.
+    """
     unique = list(dict.fromkeys(t.upper() for t in tickers if t))
-    if len(unique) < 2:
-        for ticker in unique:
+    missing = [ticker for ticker in unique if ticker not in _frames]
+    if len(missing) < 2:
+        for ticker in missing:
             load(ticker)
         return
-    with ThreadPoolExecutor(max_workers=min(PREFETCH_WORKERS, len(unique))) as pool:
-        list(pool.map(load, unique))
+    with ThreadPoolExecutor(max_workers=min(PREFETCH_WORKERS, len(missing))) as pool:
+        list(pool.map(load, missing))
 
 
 def _upper_bound(frame: pd.DataFrame, sim_date: date) -> int:

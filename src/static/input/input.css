@@ -75,4 +75,11 @@ html {
         opacity: 0.3;
         cursor: not-allowed;
     }
+
+    /* The signals tab hangs off the right edge with its label set vertically, so it stays
+       inside the page's gutter instead of lying across the cards it opens over. */
+    .signals-tab {
+        writing-mode: vertical-rl;
+        text-orientation: mixed;
+    }
 }

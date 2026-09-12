@@ -16,6 +16,7 @@ reload a session and see the same chart they left.
 import math
 import random
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -48,6 +49,50 @@ DRIFT_FLOOR = math.log(1 + ANNUAL_DRIFT_FLOOR) / TRADING_DAYS_PER_YEAR
 _EXTENSION_CHUNK = 252
 
 _lock = threading.Lock()
+
+# --- frame cache ----------------------------------------------------------
+#
+# Building a symbol's frame means reading its stored bars back out of the database,
+# splicing them onto the real history and recomputing every indicator across the result.
+# One clock tick used to do that four times over for each symbol - asking for the same
+# numbers for the candles, the calendar and the chart - and against a database on the far
+# side of the network the reads alone were most of a second per tick. A frame is a pure
+# function of (session, ticker, that session's config), so it is built once and kept until
+# something actually writes to the future: a shock, a longer horizon, or a new fork.
+MAX_CACHED_FRAMES = 64
+
+_bars_cache: "OrderedDict[tuple[str, str], pd.DataFrame]" = OrderedDict()
+_future_cache: "OrderedDict[tuple[str, str], pd.DataFrame]" = OrderedDict()
+_merged_cache: "OrderedDict[tuple[str, str], pd.DataFrame]" = OrderedDict()
+_cache_lock = threading.Lock()
+
+
+def _remember(cache: "OrderedDict", key: tuple, frame: pd.DataFrame) -> None:
+    with _cache_lock:
+        cache[key] = frame
+        cache.move_to_end(key)
+        while len(cache) > MAX_CACHED_FRAMES:
+            cache.popitem(last=False)
+
+
+def _recall(cache: "OrderedDict", key: tuple):
+    with _cache_lock:
+        frame = cache.get(key)
+        if frame is not None:
+            cache.move_to_end(key)
+        return frame
+
+
+def invalidate(session_id: str, ticker: str | None = None) -> None:
+    """Drop cached frames after the future changed. Called from every write path."""
+    wanted = None if ticker is None else (str(session_id), ticker.upper())
+    with _cache_lock:
+        for cache in (_bars_cache, _future_cache, _merged_cache):
+            if wanted is not None:
+                cache.pop(wanted, None)
+                continue
+            for key in [key for key in cache if key[0] == str(session_id)]:
+                cache.pop(key, None)
 
 
 @dataclass(frozen=True)
@@ -202,9 +247,15 @@ def generate_bars(config_: SimulationConfig, base_volume: float | None = None) -
 
 
 def _stored_bars(session_id: str, config_: SimulationConfig) -> pd.DataFrame:
-    return database.fetch_simulated_prices(
+    key = (str(session_id), config_.ticker)
+    cached = _recall(_bars_cache, key)
+    if cached is not None:
+        return cached
+    frame = database.fetch_simulated_prices(
         session_id, config_.ticker, config_.fork_date, config_.fork_date + timedelta(days=40 * config_.horizon_days)
     )
+    _remember(_bars_cache, key, frame)
+    return frame
 
 
 def ensure_future(session_id: str, config_: SimulationConfig) -> int:
@@ -226,6 +277,8 @@ def ensure_future(session_id: str, config_: SimulationConfig) -> int:
         written = database.upsert_simulated_prices(session_id, config_.ticker, new_rows)
         if bars:
             database.update_simulation(session_id, config_.ticker, last_generated=bars[-1][0])
+        # New bars exist now, so every frame built from the old ones is stale.
+        invalidate(session_id, config_.ticker)
         return written
 
 
@@ -252,9 +305,35 @@ def replace_horizon(config_: SimulationConfig, horizon_days: int) -> SimulationC
 
 
 def future_frame(session_id: str, config_: SimulationConfig) -> pd.DataFrame:
-    """Persisted synthetic bars as a price frame, shaped like fetch_price_history."""
+    """Persisted synthetic bars as a price frame, shaped like fetch_price_history.
+
+    The horizon is only checked and topped up on a cache miss: on a hit the bars are
+    already materialized, which is exactly the condition `ensure_future` re-derives with a
+    query of its own.
+    """
+    key = (str(session_id), config_.ticker)
+    cached = _recall(_future_cache, key)
+    if cached is not None:
+        return cached
     ensure_future(session_id, config_)
-    return _stored_bars(session_id, config_)
+    frame = _stored_bars(session_id, config_)
+    _remember(_future_cache, key, frame)
+    return frame
+
+
+def merged_frame(session_id: str, config_: SimulationConfig, real: pd.DataFrame) -> pd.DataFrame:
+    """`merge_with_history` with the result kept.
+
+    This is the expensive half: SMA/RSI/MACD are recomputed across the seam of real and
+    generated bars, over the whole series, on every request that draws a chart.
+    """
+    key = (str(session_id), config_.ticker)
+    cached = _recall(_merged_cache, key)
+    if cached is not None:
+        return cached
+    frame = merge_with_history(real, future_frame(session_id, config_))
+    _remember(_merged_cache, key, frame)
+    return frame
 
 
 def apply_shock(
@@ -285,6 +364,8 @@ def apply_shock(
     impact = max(-0.9, min(0.9, float(sentiment) * float(magnitude) * config.SHOCK_IMPACT_SCALE))
     if abs(impact) < 1e-6:
         return 0
+    # Every cached frame for this symbol came from the pre-shock candles.
+    invalidate(session_id, config_.ticker)
     decay_days = max(1, int(decay_days))
 
     updates = []
@@ -316,7 +397,11 @@ def apply_shock(
             )
         )
 
-    return database.rescale_simulated_prices(session_id, config_.ticker, updates)
+    written = database.rescale_simulated_prices(session_id, config_.ticker, updates)
+    # Again on the way out: a rebuild that slipped in between the two invalidations would
+    # have cached the pre-shock candles.
+    invalidate(session_id, config_.ticker)
+    return written
 
 
 def merge_with_history(real: pd.DataFrame, future: pd.DataFrame) -> pd.DataFrame:

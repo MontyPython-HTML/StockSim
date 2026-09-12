@@ -16,6 +16,11 @@ All JSON endpoints live under `/api` ([src/routes/game_routes.py](../src/routes/
   ```
 
   with HTTP `400`.
+- **Every `/api` failure is JSON.** A malformed path, the wrong method and even an
+  unexpected 500 come back as `{"error": "..."}` rather than Flask's HTML error page, so a
+  client can always parse the response. Unhandled failures are still logged in full.
+- A malformed `session_id` is treated as an unknown session (`400 Session not found`) rather
+  than being handed to the database, where an invalid uuid raised a driver error.
 
 ---
 
@@ -40,7 +45,8 @@ Several endpoints return the same shape — the full current state of one game s
 ```json
 {
   "session_id": "29f42d68-23ab-4881-86de-ef6f4baf0f3d",
-  "ticker": "MSFT",
+  "tickers": ["MSFT", "AAPL"],
+  "focus": null,
   "sim_date": "2023-03-01",
   "start_date": "2023-03-01",
   "end_date": "2023-12-31",
@@ -71,7 +77,19 @@ Several endpoints return the same shape — the full current state of one game s
       "rsi14": 58.3, "macd": 1.02, "macd_signal": 0.87, "macd_hist": 0.15 }
   ],
   "trades": [
-    { "date": "2023-03-01", "side": "BUY", "shares": 20.0, "price": 246.27 }
+    { "date": "2023-03-01", "ticker": "MSFT", "side": "BUY", "shares": 20.0, "price": 246.27 }
+  ],
+  "quotes": [
+    { "ticker": "MSFT", "close": 246.27, "previous_close": 247.5,
+      "change_pct": -0.50, "simulated": false }
+  ],
+  "signals": [
+    { "name": "Golden cross", "direction": "bullish", "message": "...",
+      "ticker": "MSFT", "date": "2023-03-01" }
+  ],
+  "pending_ai": [
+    { "kind": "PATTERN_LESSON", "ticker": "MSFT", "pattern": "Golden cross",
+      "date": "2023-03-01" }
   ],
   "ai_feed": [
     {
@@ -84,6 +102,11 @@ Several endpoints return the same shape — the full current state of one game s
         "disclaimer": "Simulated teaching output. Not financial advice."
       }
     }
+  ],
+  "patterns": [
+    { "slug": "golden_cross", "name": "Golden cross", "family": "trend",
+      "tension": "...", "taught": true, "lessons": 1,
+      "first_taught": "2023-03-01", "first_ticker": "MSFT" }
   ]
 }
 ```
@@ -91,25 +114,11 @@ Several endpoints return the same shape — the full current state of one game s
 Notes:
 - `today` and `chart` come from [indicators.py](../src/scripts/game/indicators.py) — see that file (or ask about "predictors") for what `sma20`/`sma50`/`rsi14`/`macd*` mean.
 - `chart` is a rolling window (default last 180 trading days through `sim_date`), meant for feeding straight into a chart library.
-- `ai_feed` entries are whatever the Gemini MCP server (or the local event generator) has logged so far for this session. `type` is `"PREDICTION"`, `"NEWS_EVENT"`, or `"MARKET_SHOCK"` — see [server.py](../src/mcp_server/server.py). A `MARKET_SHOCK` payload carries `bars_affected`, the number of generated sessions its headline actually moved.
+- `ai_feed` entries are whatever the Gemini MCP server (or the local event generator) has logged so far for this session. `type` is `"PREDICTION"`, `"NEWS_EVENT"`, `"MARKET_SHOCK"`, or `"PATTERN_LESSON"` — see [server.py](../src/mcp_server/server.py). A `MARKET_SHOCK` payload carries `bars_affected`, the number of generated sessions its headline actually moved; a `PATTERN_LESSON` payload carries `pattern` (the slug), `what_it_is`/`how_to_spot`/`why_it_matters`/`common_mistake`/`watch_next`, `context` (the indicator readings it was written against), and `source` (`"gemini"` or `"offline"`).
+- `patterns` is the whole syllabus in teaching order, each row marked with whether this session has been taught it, how many times, and the first bar and symbol that taught it. See [patterns.py](../src/scripts/game/patterns.py).
+- `signals` and `pending_ai` are only present on the `/advance` response: `signals` are the patterns that printed on the bars the clock just walked, and `pending_ai` is what was queued for the background workers (AI runs off the request path, so its output lands in `ai_feed` on a later tick).
 - `simulation` describes where prices are coming from. `{ "mode": "real", "ticker": "MSFT" }` while replaying real history; once forked, `"mode": "simulated"` plus the fork date, anchor price, drift, volatility and seed (see [`/api/session/<id>/simulation`](#get-apisessionsession_idsimulation)).
 - `status` is `"active"` until `sim_date` reaches `end_date` (or the ticker's last stored trading day), then it flips to `"finished"` and further `/advance` calls become no-ops.
-
----
-
-## `GET /api/tickers`
-
-Lists every ticker currently ingested into TigerData, with its stored date range.
-
-**Response `200`**
-```json
-{
-  "tickers": [
-    { "ticker": "AAPL", "first_day": "2022-01-03", "last_day": "2024-12-31", "row_count": 753 },
-    { "ticker": "MSFT", "first_day": "2022-01-03", "last_day": "2024-12-31", "row_count": 753 }
-  ]
-}
-```
 
 ---
 
@@ -187,14 +196,14 @@ Moves the simulation forward one or more trading days.
       "message": "The 20-day average crossed above the 50-day average...",
       "date": "2023-03-14" }
   ],
-  "pending_ai": ["PREDICTION"]
+  "pending_ai": [{ "kind": "PREDICTION", "ticker": "AAPL" }]
 }
 ```
-- `signals` — any technical signals that *fired on this call* (state changes only, e.g. a crossover happening — not "RSI is currently above 70").
+- `signals` — any technical signals that *fired on this call* (state changes only, e.g. a crossover happening — not "RSI is currently above 70"). Each entry carries the `ticker` it belongs to.
 - `pending_ai` — which AI event kinds were just scheduled in the background (`"PREDICTION"`, `"NEWS_EVENT"`, and `"MARKET_SHOCK"` for a session with a simulated future). The AI call itself runs asynchronously via the Gemini MCP server and is **not** in the response yet — poll `GET /state` a few seconds later and check `ai_feed` for the result. If the MCP server is unavailable, `pending_ai` items simply never turn into `ai_feed` entries; the simulation itself is unaffected.
 - Advancing past `end_date` is a no-op that just returns the final state with `status: "finished"` and empty `signals`/`pending_ai`.
 
-**Errors (`400`)** — `Session not found`.
+**Errors (`400`)** — `Session not found`; `days` that is not an integer, or is below 1.
 
 ---
 
@@ -204,18 +213,24 @@ Executes a buy or sell at the current `sim_date`'s closing price.
 
 **Request body**
 ```json
-{ "side": "BUY", "shares": 10 }
+{ "ticker": "AAPL", "side": "BUY", "shares": 10 }
 ```
+- `ticker` — required, and must be one of this session's watched symbols.
 - `side` — `"BUY"` or `"SELL"` (case-insensitive).
-- `shares` — number, must be `> 0`.
+- `shares` — number, must be `> 0` and no more than 1,000,000,000.
 
 **Response `200`** — the [session state object](#the-session-state-object) with updated `portfolio`/`trades`.
 
 **Errors (`400`)**
+- `<TICKER> is not in this session's watchlist.`
 - `side must be BUY or SELL`
-- `shares must be greater than zero` / `shares must be a number`
+- `shares must be greater than zero` / `shares must be a number` /
+  `shares must be between 0 and 1,000,000,000` (also catches `NaN` and infinity)
 - `Not enough cash: that costs $X and you have $Y` (BUY)
 - `You only hold N shares of <TICKER>` (SELL)
+- `This session is over. Start a new one to keep trading.` — a `finished` session stops
+  accepting trades; the clock is the risk, so it cannot be reopened once it has run out.
+  Fork a new future onto it (`/simulate`) to put it back in play.
 - `Session not found`
 
 ---
@@ -428,7 +443,6 @@ bar also gets a volume spike.
 |--------|-----------------------------------|--------------------------------------------|
 | GET    | `/`                                | Start-session landing page (HTML)          |
 | GET    | `/game/<session_id>`               | Game screen (HTML)                         |
-| GET    | `/api/tickers`                     | List ingested tickers                      |
 | GET    | `/api/universe`                    | Ticker catalog (with/without history)      |
 | POST   | `/api/session/start`               | Start a new session                        |
 | GET    | `/api/session/<id>/state`          | Fetch current session state                |
@@ -439,6 +453,35 @@ bar also gets a volume spike.
 | GET    | `/api/session/<id>/simulation`     | Fork parameters, bounds, applied shocks    |
 | POST   | `/api/session/<id>/shock`          | Inject one specific market event           |
 | GET    | `/api/session/<id>/basket`         | Rebased basket comparison + equity curve   |
+
+---
+
+## Performance notes
+
+The database here is remote, so a request's cost is mostly its number of round trips. Three
+things keep a clock tick cheap, and each one is a contract worth preserving:
+
+- **Generated futures are cached in-process.** `simulation` keeps a symbol's stored bars
+  (`_bars_cache`), its assembled future (`_future_cache`) and the full history-spliced frame
+  with indicators recomputed (`_merged_cache`), keyed by `(session_id, ticker)`. Every write
+  to a future must call `simulation.invalidate(session_id, ticker)` — `ensure_future`,
+  `extend_horizon`, `apply_shock` and `fork_session` all do. Skip that call and a shock will
+  be silently swallowed by a stale frame. Rebuilding instead of caching cost 24-29 round
+  trips per tick; it is 5-11 now.
+- **Writes are one statement, not one per row.** `executemany` sends a round trip per row:
+  a single 252-bar shock took ~17s through it, because the database is across the network.
+  Bulk writes go through `execute_values` with a `VALUES` list, which is also why the
+  rescale statement casts its batch columns (an all-NULL `event_id` infers as `text` and
+  `coalesce(text, bigint)` is a type error).
+- **AI runs off the request path.** `engine._schedule_ai` hands work to a small thread pool
+  and the result lands in `mcp_events`, so it shows up in `ai_feed` on a later tick. The
+  frontend relies on that: it does not poll while the clock is running, because the next
+  `advance` response already carries the updated feed.
+
+Handlers that already hold a session bundle should pass what it contains —
+`price_source.for_watchlist(session, bundle["watchlist"])` and
+`performance.basket(session, trades, window, bundle["watchlist"])` both skip a query that
+way.
 
 ## curl examples
 
@@ -482,6 +525,8 @@ Where each piece of this API actually lives, and the exact handler for each endp
 | [`src/routes/game_routes.py`](../src/routes/game_routes.py) | All `/api/*` route handlers (thin — parses the request, calls `engine`) |
 | [`src/scripts/game/engine.py`](../src/scripts/game/engine.py) | Game rules: sessions, trades, advancing days, scheduling AI calls |
 | [`src/scripts/game/indicators.py`](../src/scripts/game/indicators.py) | SMA/RSI/MACD/volume math and signal detection |
+| [`src/scripts/game/patterns.py`](../src/scripts/game/patterns.py) | The pattern syllabus: lesson text per pattern, and which one to teach next |
+| [`src/scripts/game/performance.py`](../src/scripts/game/performance.py) | Portfolio views: the rebased basket comparison and the account equity curve |
 | [`src/scripts/game/price_cache.py`](../src/scripts/game/price_cache.py) | In-memory price/indicator cache per ticker |
 | [`src/scripts/game/price_source.py`](../src/scripts/game/price_source.py) | Picks real vs simulated prices for a session; the surface `engine.py` talks to |
 | [`src/scripts/game/simulation.py`](../src/scripts/game/simulation.py) | Generates a session's private future and applies event shocks to it |
@@ -502,15 +547,16 @@ Where each piece of this API actually lives, and the exact handler for each endp
 
 | Method | Path | Handler |
 |---|---|---|
-| GET | `/` | [`app.py:51`](../src/app.py#L51) `home()` |
-| GET | `/game/<session_id>` | [`app.py:63`](../src/app.py#L63) `game()` |
-| GET | `/api/tickers` | [`game_routes.py:52`](../src/routes/game_routes.py#L52) `tickers()` |
-| GET | `/api/universe` | [`game_routes.py:57`](../src/routes/game_routes.py#L57) `universe()` |
-| POST | `/api/session/start` | [`game_routes.py:76`](../src/routes/game_routes.py#L76) `start_session()` |
-| GET | `/api/session/<id>/state` | [`game_routes.py:96`](../src/routes/game_routes.py#L96) `session_state()` |
-| POST | `/api/session/<id>/simulate` | [`game_routes.py:101`](../src/routes/game_routes.py#L101) `simulate()` |
-| GET | `/api/session/<id>/simulation` | [`game_routes.py:116`](../src/routes/game_routes.py#L116) `simulation_detail()` |
-| POST | `/api/session/<id>/shock` | [`game_routes.py:146`](../src/routes/game_routes.py#L146) `inject_shock()` |
-| POST | `/api/session/<id>/advance` | [`game_routes.py:185`](../src/routes/game_routes.py#L185) `advance()` |
-| POST | `/api/session/<id>/trade` | [`game_routes.py:192`](../src/routes/game_routes.py#L192) `trade()` |
-| POST | `/api/session/<id>/predict` | [`game_routes.py:202`](../src/routes/game_routes.py#L202) `predict()` |
+| GET | `/` | [`app.py:84`](../src/app.py#L84) `home()` |
+| GET | `/game/<session_id>` | [`app.py:96`](../src/app.py#L96) `game()` |
+| GET | `/api/universe` | [`game_routes.py:117`](../src/routes/game_routes.py#L117) `universe()` |
+| GET | `/api/ai/status` | [`game_routes.py:136`](../src/routes/game_routes.py#L136) `ai_status()` |
+| POST | `/api/session/start` | [`game_routes.py:166`](../src/routes/game_routes.py#L166) `start_session()` |
+| GET | `/api/session/<id>/state` | [`game_routes.py:183`](../src/routes/game_routes.py#L183) `session_state()` |
+| GET | `/api/session/<id>/basket` | [`game_routes.py:195`](../src/routes/game_routes.py#L195) `session_basket()` |
+| POST | `/api/session/<id>/advance` | [`game_routes.py:211`](../src/routes/game_routes.py#L211) `advance()` |
+| POST | `/api/session/<id>/trade` | [`game_routes.py:224`](../src/routes/game_routes.py#L224) `trade()` |
+| POST | `/api/session/<id>/predict` | [`game_routes.py:238`](../src/routes/game_routes.py#L238) `predict()` |
+| POST | `/api/session/<id>/simulate` | [`game_routes.py:247`](../src/routes/game_routes.py#L247) `simulate()` |
+| GET | `/api/session/<id>/simulation` | [`game_routes.py:263`](../src/routes/game_routes.py#L263) `simulation_detail()` |
+| POST | `/api/session/<id>/shock` | [`game_routes.py:301`](../src/routes/game_routes.py#L301) `inject_shock()` |

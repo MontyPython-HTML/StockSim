@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import pandas as pd
-import psycopg2
 from psycopg2.extras import RealDictCursor, execute_values
 from psycopg2.pool import ThreadedConnectionPool
 
@@ -598,17 +597,33 @@ def rescale_simulated_prices(session_id: str, ticker: str, updates: Iterable[tup
     updates = list(updates)
     if not updates:
         return 0
+    # One statement, not one per bar. `executemany` sends each row as its own round trip,
+    # which against a remote database made a single 252-bar shock take about seventeen
+    # seconds; a VALUES list is paged the same way the insert path already is.
     sql = """
-        UPDATE simulated_prices
-        SET open = %s, high = %s, low = %s, close = %s, volume = %s,
-            event_id = coalesce(%s, event_id)
-        WHERE session_id = %s AND ticker = %s AND ts = %s
+        UPDATE simulated_prices AS target
+        SET open = batch.open,
+            high = batch.high,
+            low = batch.low,
+            close = batch.close,
+            volume = batch.volume,
+            event_id = coalesce(batch.event_id, target.event_id)
+        FROM (VALUES %s) AS batch (session_id, ticker, ts, open, high, low, close, volume, event_id)
+        WHERE target.session_id = batch.session_id
+          AND target.ticker = batch.ticker
+          AND target.ts = batch.ts
     """
-    payload = [(o, h, low, c, v, event, session_id, ticker.upper(), ts) for o, h, low, c, v, event, ts in updates]
+    # The casts are not decoration: a batch whose event_id is all NULLs would otherwise be
+    # inferred as text, and coalesce(text, bigint) is a type error rather than a shrug.
+    template = "(%s::uuid, %s, %s::date, %s, %s, %s, %s, %s, %s::bigint)"
+    payload = [
+        (session_id, ticker.upper(), ts, o, h, low, c, v, event)
+        for o, h, low, c, v, event, ts in updates
+    ]
     # Every row is a *multiplier* on the bar it replaces, so this is the one write that
     # genuinely has to be all-or-nothing: a half-applied shock cannot be re-run.
     with get_transaction(dict_rows=False) as cur:
-        cur.executemany(sql, payload)
+        execute_values(cur, sql, payload, template=template, page_size=INSERT_PAGE_SIZE)
     return len(payload)
 
 

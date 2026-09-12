@@ -35,6 +35,23 @@ let latestState = null;
 let latestSimulation = null;
 let focus = null;
 let companyNames = {};
+const BASKET_REFRESH_MS = 500;
+let basketTimer = null;
+let basketInFlight = false;
+let basketQueued = false;
+let basketSignature = null;
+
+// AI work lands off the tick that queued it, so a paused clock has to go and collect it.
+// A running clock does not: the next advance response already carries the whole feed.
+const FEED_REFRESH_MS = 5000;
+let feedTimer = null;
+
+// Signals live behind a drawer, so the page has to remember how many have arrived and how
+// many of those the player has actually looked at.
+let signalsOpen = false;
+let signalTotal = 0;
+let signalUnread = 0;
+const signalSymbols = new Set();
 
 async function call(path, options = {}) {
     const response = await fetch(path, {
@@ -189,6 +206,7 @@ function render(state) {
     renderHoldings(state);
     updateCharts(charts, state);
     renderFeed(state.ai_feed);
+    renderPatterns(state.patterns);
 
     if (state.status === 'finished') finish(state);
 }
@@ -201,8 +219,92 @@ function renderFeed(feed) {
         container.appendChild(
             entry.type === 'PREDICTION' ? predictionCard(entry)
                 : entry.type === 'MARKET_SHOCK' ? shockCard(entry)
-                    : newsCard(entry));
+                    : entry.type === 'PATTERN_LESSON' ? lessonCard(entry)
+                        : newsCard(entry));
     }
+}
+
+// --- pattern school -------------------------------------------------------
+
+const FAMILY_TONE = {
+    trend: 'border-brand/50 bg-brand/10 text-brand-soft',
+    momentum: 'border-accent/50 bg-accent/10 text-accent-soft',
+    participation: 'border-warn/50 bg-warn/10 text-warn',
+};
+
+function renderPatterns(rows) {
+    if (!rows) return;
+    const list = el('pattern-list');
+    const learned = rows.filter((row) => row.taught);
+    el('pattern-progress').textContent = `${learned.length} of ${rows.length} learned`;
+    // The next unlearned pattern is the one to be looking for, so it is called out.
+    const next = rows.find((row) => !row.taught);
+
+    list.innerHTML = '';
+    for (const row of rows) {
+        const node = document.createElement('div');
+        const tone = FAMILY_TONE[row.family] || 'border-line text-muted';
+        if (row.taught) {
+            node.className = 'rounded-xl border border-line bg-ink-soft p-3';
+            node.innerHTML = `
+                <div class="flex items-center justify-between gap-2">
+                    <span class="font-medium">${row.name}</span>
+                    <span class="shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide ${tone}">${row.family}</span>
+                </div>
+                <p class="mt-1 text-xs text-dim">
+                    ${row.lessons} lesson${row.lessons === 1 ? '' : 's'} · first seen in
+                    <span class="font-mono text-muted">${row.first_ticker || '—'}</span> on ${row.first_taught || '—'}
+                </p>`;
+        } else {
+            const hint = row.slug === next?.slug ? 'Look out for this one next.' : 'Not seen yet.';
+            node.className = 'rounded-xl border border-dashed border-line p-3 text-muted';
+            node.innerHTML = `
+                <div class="flex items-center justify-between gap-2">
+                    <span class="font-medium">${row.name}</span>
+                    <span class="shrink-0 rounded-full border border-line px-2 py-0.5 text-[10px] uppercase tracking-wide text-dim">${row.family}</span>
+                </div>
+                <p class="mt-1 text-xs text-dim">${hint}</p>`;
+        }
+        list.appendChild(node);
+    }
+}
+
+function lessonCard(entry) {
+    const e = entry.payload;
+    const tone = FAMILY_TONE[e.family] || 'border-line bg-ink-soft';
+    const readings = e.context || {};
+    const steps = e.how_to_spot || [];
+    const node = document.createElement('div');
+    node.className = `rounded-xl border ${tone.split(' ')[0] || 'border-line'} bg-ink-soft p-4`;
+    // The numbers the lesson was written against, so the card points at the chart on
+    // screen rather than describing the pattern in the abstract.
+    const figures = [
+        ['close', readings.close],
+        ['RSI', readings.rsi14],
+        ['SMA20', readings.sma20],
+        ['SMA50', readings.sma50],
+    ].filter(([, value]) => value != null && value !== undefined)
+        .map(([label, value]) => `<span class="rounded-full border border-line px-2 py-0.5 font-mono text-xs text-muted">${label} ${Number(value).toFixed(2)}</span>`)
+        .join('');
+    node.innerHTML = `
+        <div class="flex items-center justify-between mb-1 gap-2">
+            <span class="text-xs font-semibold uppercase tracking-wide text-accent-soft">
+                Pattern lesson · ${entry.ticker} · ${entry.sim_date}
+            </span>
+            <span class="shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide ${FAMILY_TONE[e.family] || 'border-line text-muted'}">${e.family || 'pattern'}</span>
+        </div>
+        <p class="font-semibold text-white">${e.name || e.title || 'Pattern'}</p>
+        ${e.tension ? `<p class="mt-1 text-xs italic text-dim">${e.tension}</p>` : ''}
+        <p class="mt-2 text-muted leading-relaxed">${e.what_it_is || ''}</p>
+        ${steps.length ? `<ol class="mt-3 space-y-1 text-xs text-muted">${steps.map((step, i) => `<li class="flex gap-2"><span class="text-dim">${i + 1}.</span><span>${step}</span></li>`).join('')}</ol>` : ''}
+        ${e.why_it_matters ? `<p class="mt-3 text-xs text-muted"><span class="text-dim uppercase tracking-wide">Why it matters</span><br>${e.why_it_matters}</p>` : ''}
+        ${e.common_mistake ? `<p class="mt-2 text-xs text-warn"><span class="uppercase tracking-wide">Common mistake</span><br>${e.common_mistake}</p>` : ''}
+        ${e.watch_next ? `<p class="mt-2 text-xs text-muted"><span class="text-dim uppercase tracking-wide">Watch next</span><br>${e.watch_next}</p>` : ''}
+        ${figures ? `<div class="mt-3 flex flex-wrap gap-1">${figures}</div>` : ''}
+        <p class="mt-3 text-[11px] uppercase tracking-wide text-dim">
+            ${e.source === 'gemini' ? 'Gemini coach' : 'Built-in syllabus'} · taught from ${e.signal || e.name || 'the chart'}
+        </p>`;
+    return node;
 }
 
 function predictionCard(entry) {
@@ -277,6 +379,7 @@ function logSignals(signals) {
     const log = el('signal-log');
     if (log.querySelector('p.text-dim')) log.innerHTML = '';
     for (const signal of signals) {
+        signalSymbols.add(signal.ticker);
         const tone = signal.direction === 'bullish' ? 'border-up/40 bg-up/10'
             : signal.direction === 'bearish' ? 'border-down/40 bg-down/10'
                 : 'border-line bg-ink-soft';
@@ -292,6 +395,9 @@ function logSignals(signals) {
         log.prepend(node);
         toast(`${signal.ticker} · ${signal.name}`, signal.message, signal.direction);
     }
+    signalTotal += signals.length;
+    if (!signalsOpen) signalUnread += signals.length;
+    updateSignalsBadge();
 }
 
 function toast(title, message, direction) {
@@ -310,6 +416,41 @@ function setStatus(text, active) {
     pill.className = `rounded-full border px-4 py-1.5 text-sm ${active ? 'border-accent/50 bg-accent/10 text-accent-soft' : 'border-line text-muted'}`;
 }
 
+// --- the signal drawer ----------------------------------------------------
+
+function setSignalsOpen(open) {
+    signalsOpen = open;
+    el('signal-drawer').classList.toggle('translate-x-full', !open);
+    el('signal-drawer').setAttribute('aria-hidden', String(!open));
+    el('signal-backdrop').classList.toggle('hidden', !open);
+    const tab = el('signals-toggle');
+    tab.setAttribute('aria-expanded', String(open));
+    // The tab would otherwise sit underneath the panel it just opened.
+    tab.classList.toggle('opacity-0', open);
+    tab.classList.toggle('pointer-events-none', open);
+    if (open) signalUnread = 0;
+    updateSignalsBadge();
+}
+
+function updateSignalsBadge() {
+    const badge = el('signals-count');
+    // Closed, the badge counts what has not been read; open, it counts the session total,
+    // because the drawer itself is now the place to read them.
+    const count = signalsOpen ? signalTotal : signalUnread;
+    badge.textContent = String(count);
+    badge.className = 'mx-auto mt-2 min-w-6 rounded-full px-2 py-0.5 text-center text-xs font-semibold '
+        + (signalsOpen ? 'bg-brand text-white' : 'bg-warn text-ink')
+        + (count === 0 ? ' hidden' : '');
+    const summary = el('signals-summary');
+    if (!signalTotal) {
+        summary.textContent = 'Every pattern the clock has printed on your own symbols.';
+        return;
+    }
+    const symbols = signalSymbols.size;
+    summary.textContent = `${signalTotal} signal${signalTotal === 1 ? '' : 's'} across `
+        + `${symbols} symbol${symbols === 1 ? '' : 's'}.`;
+}
+
 // --- interaction ----------------------------------------------------------
 
 async function setFocus(ticker) {
@@ -323,8 +464,20 @@ async function setFocus(ticker) {
 }
 
 async function refreshBasket() {
+    if (basketInFlight) {
+        // A running clock asks far more often than these charts change. Coalesce instead
+        // of stacking requests: one is already on its way with fresher numbers.
+        basketQueued = true;
+        return;
+    }
+    basketInFlight = true;
     try {
         const payload = await call(`/api/session/${sessionId}/basket`);
+        // Nothing moved since the last draw, so the charts would only be re-parsed.
+        const signature = `${payload.sim_date}|${payload.equity?.length ?? 0}|`
+            + payload.series.map((row) => `${row.ticker}:${row.last_close}:${row.points.length}`).join(',');
+        if (signature === basketSignature) return;
+        basketSignature = signature;
         updateBasketChart(charts.basket, payload);
         updateEquityChart(charts.equity, payload);
         renderBasketNote(payload);
@@ -334,7 +487,32 @@ async function refreshBasket() {
             : '';
     } catch (error) {
         console.error(error);
+    } finally {
+        basketInFlight = false;
+        if (basketQueued) {
+            basketQueued = false;
+            scheduleBasket(0);
+        }
     }
+}
+
+// The basket and equity panels are read at a glance, not frame by frame, so a tick only
+// schedules them: at 10x the clock ticks ten times a second and redrawing both charts for
+// every one of those was most of the page's work.
+function scheduleBasket(delay = BASKET_REFRESH_MS) {
+    if (basketTimer !== null) return;
+    basketTimer = setTimeout(() => {
+        basketTimer = null;
+        refreshBasket();
+    }, delay);
+}
+
+function scheduleFeedRefresh(delay = FEED_REFRESH_MS) {
+    if (feedTimer !== null) return;
+    feedTimer = setTimeout(() => {
+        feedTimer = null;
+        refreshFeed();
+    }, delay);
 }
 
 async function advance(days = 1) {
@@ -347,13 +525,13 @@ async function advance(days = 1) {
         });
         render(state);
         logSignals(state.signals || []);
-        refreshBasket();
-        // AI runs in the background; pick the result up once it has landed, and again a
-        // little later because a scheduled shock shifts the forward curve too.
-        if ((state.pending_ai || []).length) {
-            setTimeout(refreshFeed, 6000);
-            setTimeout(refreshFeed, 14000);
-        }
+        scheduleBasket();
+        // AI runs in the background, so its output lands after the tick that queued it.
+        // Nothing to poll for while the clock is running - the next advance already
+        // returns the updated feed - whereas the two timers this used to arm on every
+        // such tick were fetching the entire state twice per day advanced, and each of
+        // those re-rendered all five charts.
+        if ((state.pending_ai || []).length && !timer) scheduleFeedRefresh();
     } catch (error) {
         console.error(error);
     } finally {
@@ -366,8 +544,11 @@ async function refreshFeed() {
         const state = await call(`/api/session/${sessionId}/state?focus=${focus}`);
         if (state.ai_feed.length !== (latestState?.ai_feed.length ?? 0)) {
             renderFeed(state.ai_feed);
+            // A new event may well be the lesson that teaches the next pattern, and the
+            // panel is the visible half of the curriculum.
+            renderPatterns(state.patterns);
             refreshSimulation();
-            refreshBasket();
+            scheduleBasket(0);
         }
     } catch (error) {
         console.error(error);
@@ -377,18 +558,31 @@ async function refreshFeed() {
 function play() {
     if (timer) return;
     const speed = SPEEDS[Number(el('speed').value)];
-    timer = setInterval(() => advance(speed.days), speed.ms);
+    // Self-scheduling rather than setInterval: a tick that takes 400ms of a 1000ms budget
+    // waits the remaining 600ms, so "1 day/sec" means one day a second instead of drifting
+    // a whole extra second behind every time a request runs long.
+    const tick = async () => {
+        if (!timer) return;
+        const started = performance.now();
+        await advance(speed.days);
+        if (!timer) return;
+        const spent = performance.now() - started;
+        timer = setTimeout(tick, Math.max(0, speed.ms - spent));
+    };
+    timer = setTimeout(tick, speed.ms);
     el('play-btn').textContent = 'Pause';
     el('play-btn').className = PLAYING;
     setStatus('Playing', true);
 }
 
 function pause() {
-    clearInterval(timer);
+    clearTimeout(timer);
     timer = null;
     el('play-btn').textContent = 'Play';
     el('play-btn').className = PRIMARY;
     setStatus('Paused', false);
+    // Collect whatever the background workers finished while the clock was running.
+    scheduleFeedRefresh(0);
 }
 
 function finish(state) {
@@ -405,17 +599,19 @@ function finish(state) {
     overlay.classList.add('flex');
 }
 
-async function trade(side, ticker) {
+// `explicitShares` is for callers that already know the size they want - "sell everything"
+// means the whole position, not however many happen to be typed in the quantity box.
+async function trade(side, ticker, explicitShares) {
     const errorBox = el('trade-error');
     errorBox.classList.add('hidden');
     const target = ticker || el('trade-ticker').value;
-    const shares = Number(el('share-qty').value);
+    const shares = explicitShares ?? Number(el('share-qty').value);
     try {
         render(await call(`/api/session/${sessionId}/trade`, {
             method: 'POST',
             body: JSON.stringify({ ticker: target, side, shares, focus: focus || target }),
         }));
-        refreshBasket();
+        scheduleBasket(0);
         toast(`${side} ${shares} ${target}`, `Filled at the close on ${latestState.sim_date}.`, 'neutral');
     } catch (error) {
         errorBox.textContent = error.message;
@@ -459,6 +655,13 @@ async function refreshSimulation() {
 
 // --- wiring ---------------------------------------------------------------
 
+el('signals-toggle').addEventListener('click', () => setSignalsOpen(true));
+el('signals-close').addEventListener('click', () => setSignalsOpen(false));
+el('signal-backdrop').addEventListener('click', () => setSignalsOpen(false));
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && signalsOpen) setSignalsOpen(false);
+});
+
 el('play-btn').addEventListener('click', () => (timer ? pause() : play()));
 el('step-btn').addEventListener('click', () => advance(1));
 el('buy-btn').addEventListener('click', () => trade('BUY'));
@@ -482,8 +685,10 @@ el('sell-all-btn').addEventListener('click', async () => {
     const button = el('sell-all-btn');
     button.disabled = true;
     try {
-        for (const position of latestState?.portfolio?.positions ?? []) {
-            await trade('SELL', position.ticker);
+        // Snapshot the positions first: each trade re-renders, so reading the live list
+        // while selling out of it would let the loop skip or repeat a holding.
+        for (const position of [...(latestState?.portfolio?.positions ?? [])]) {
+            await trade('SELL', position.ticker, position.shares);
         }
     } finally {
         button.disabled = false;
@@ -528,7 +733,7 @@ el('sim-fork-btn').addEventListener('click', async () => {
             method: 'POST', body: JSON.stringify({ focus }),
         }));
         await refreshSimulation();
-        refreshBasket();
+        scheduleBasket(0);
     } catch (error) {
         errorBox.textContent = error.message;
         errorBox.classList.remove('hidden');
@@ -551,7 +756,7 @@ el('sim-extend-btn').addEventListener('click', async () => {
             body: JSON.stringify({ horizon_days: horizon, focus }),
         }));
         await refreshSimulation();
-        refreshBasket();
+        scheduleBasket(0);
     } catch (error) {
         console.error(error);
     } finally {
@@ -581,7 +786,7 @@ el('shock-form').addEventListener('submit', async (event) => {
         el('shock-headline').value = '';
         render(await call(`/api/session/${sessionId}/state?focus=${focus}`));
         await refreshSimulation();
-        refreshBasket();
+        scheduleBasket(0);
         const hit = shock.affected_tickers || [shock.ticker];
         toast(
             `${shock.scope === 'ticker' ? shock.ticker : `${hit.length} symbols`} · moved ${shock.bars_affected} sessions`,

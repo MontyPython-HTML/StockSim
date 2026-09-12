@@ -81,3 +81,13 @@ SHOCK_PEER_SPREAD = float(os.getenv("SHOCK_PEER_SPREAD", "0.45"))
 # When Gemini is unreachable (no API key, no network in the room), fall back to a
 # locally generated headline so the simulation still demonstrates random events.
 SIMULATION_OFFLINE_EVENTS = os.getenv("SIMULATION_OFFLINE_EVENTS", "true").lower() == "true"
+
+# --- pattern curriculum ---------------------------------------------------
+# When a signal fires in one of the player's own symbols, the coach teaches the pattern
+# behind it. A pattern the player has never been shown is taught immediately; one they
+# have already met waits PATTERN_REPEAT_GAP_DAYS sessions before being revisited, which
+# is what keeps the feed teaching new material instead of the same card every week.
+PATTERN_LESSONS = os.getenv("PATTERN_LESSONS", "true").lower() == "true"
+PATTERN_REPEAT_GAP_DAYS = int(os.getenv("PATTERN_REPEAT_GAP_DAYS", "20"))
+# Chance of a refresher lesson when every pattern on screen has already been taught.
+PATTERN_REPEAT_PROBABILITY = float(os.getenv("PATTERN_REPEAT_PROBABILITY", "0.5"))

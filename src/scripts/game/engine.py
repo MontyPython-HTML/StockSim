@@ -18,6 +18,7 @@ import logging
 import random
 import threading
 import uuid
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from decimal import Decimal
@@ -25,7 +26,7 @@ from decimal import Decimal
 import config
 from scripts.api import nessie
 from scripts.database import database
-from scripts.game import events, indicators, price_cache, price_source
+from scripts.game import events, indicators, patterns, price_cache, price_source
 
 DEFAULT_CHART_WINDOW = 180
 
@@ -37,6 +38,11 @@ MAX_SIGNALS_PER_TICK = 40
 # How many trailing bars signal detection is handed. The rules compare the last two
 # bars of already-computed columns, so a handful is plenty and keeps an advance cheap.
 SIGNAL_TAIL_ROWS = 5
+
+# A share count is a sanity check, not an economic one: no player trades a billion shares,
+# and anything past this either overflows NUMERIC on the way in or blows up the cost
+# arithmetic. Also catches NaN and infinity, which slip through every comparison.
+MAX_TRADE_SHARES = Decimal("1000000000")
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +69,11 @@ def normalise_tickers(raw) -> list[str]:
         raw = [part for part in raw.replace(",", " ").split() if part]
     seen: dict[str, None] = {}
     for item in raw or []:
-        symbol = str(item).strip().upper()
+        # Rejected rather than coerced: str(None) used to become the symbol "NONE", which
+        # then failed as "no price data for NONE" - a confusing way to say "bad payload".
+        if not isinstance(item, str):
+            raise GameError(f"symbols must be strings like \"AAPL\" (got {item!r})")
+        symbol = item.strip().upper()
         if symbol:
             seen[symbol] = None
     tickers = list(seen)
@@ -188,6 +198,9 @@ def _state_from_bundle(
             }
             for event in bundle["events"]
         ],
+        # The syllabus with what this session has covered, so the screen can show which
+        # patterns the player has actually been taught and which are still ahead of them.
+        "patterns": patterns.progress(bundle["events"]),
     }
 
 
@@ -198,13 +211,33 @@ def get_state(session_id: str, focus: str | None = None, window_days: int = DEFA
 # --- starting a run -------------------------------------------------------
 
 
+def _seed_for(base_seed: int | None, ticker: str) -> int | None:
+    """A per-symbol seed derived from the session's.
+
+    Handing the whole watchlist one seed made every symbol draw the *same* random shocks,
+    so unrelated names turned on exactly the same days - manufacturing the correlation the
+    sector-event feature exists to demonstrate. crc32 rather than hash(), because str
+    hashing is salted per process and a future would not survive a restart.
+    """
+    if base_seed is None:
+        return None
+    return zlib.crc32(f"{base_seed}:{ticker.upper()}".encode())
+
+
 def _window_for(watchlist: list[str], start_date: date, end_date: date) -> tuple[date, date]:
     """The span every watched symbol covers, so nothing chosen is untradeable."""
+    catalog = database.ticker_sectors(watchlist)
     first_days = []
     last_days = []
     for ticker in watchlist:
         bounds = price_cache.bounds(ticker)
         if not bounds:
+            # "Ingest it first" is only advice for a symbol we know about. Telling someone
+            # to ingest an unknown ticker sends them to a command that cannot help.
+            if ticker not in catalog:
+                raise GameError(
+                    f"Unknown symbol {ticker}. Pick one from the catalog on the start page."
+                )
             raise GameError(f"No price data stored for {ticker}. Ingest it first.")
         first = price_cache.first_trading_day(ticker, start_date)
         if first is None or first > min(end_date, bounds["last_day"]):
@@ -267,7 +300,7 @@ def start_session(
                 horizon_days=horizon_days,
                 drift=drift,
                 volatility=volatility,
-                seed=seed,
+                seed=_seed_for(seed, ticker),
             )
             last_simulated = max(last_simulated, source.bounds()["last_day"])
         database.update_session(session_id, end_date=last_simulated)
@@ -320,13 +353,45 @@ def _least_covered(watchlist: list[str], event_log: list[dict], event_type: str)
     return min(watchlist, key=lambda ticker: (counts[ticker], watchlist.index(ticker)))
 
 
-def _run_ai(kind: str, session_id: str, ticker: str, sim_date: date) -> None:
-    from scripts.api import gemini_mcp_client
-
-    key = (session_id, kind, ticker)
+def _run_ai(kind: str, session_id: str, ticker: str, sim_date: date, detail: str = "") -> None:
+    key = (session_id, kind, ticker, detail) if detail else (session_id, kind, ticker)
     try:
+        # Imported inside the try on purpose: _schedule_ai has already marked this key
+        # in-flight, and an import that raised outside would leave it there forever,
+        # silently disabling every future event of this kind for the whole process.
+        from scripts.api import gemini_mcp_client
+
         if kind == "PREDICTION":
             gemini_mcp_client.predict(session_id, ticker, sim_date)
+        elif kind == patterns.LESSON_EVENT_TYPE:
+            # `detail` is the signal name the detector produced when this was queued. The
+            # lesson is taught against the chart as it stands, so the numbers quoted in it
+            # are the ones the player can see, not the ones from the request thread.
+            session = database.get_session(session_id)
+            if session:
+                history = price_source.for_session(session, ticker).history_through(sim_date)
+                if not history.empty:
+                    fired = next(
+                        (
+                            signal
+                            for signal in indicators.detect_signals(history.tail(SIGNAL_TAIL_ROWS))
+                            if signal["name"] == detail
+                        ),
+                        None,
+                    )
+                    if fired is None:
+                        # Should not happen now that the lesson is dated to the signal's own
+                        # bar; if it does, the pattern is still worth teaching, just without
+                        # the detector's read of this particular bar.
+                        log.warning(
+                            "%s is not on %s's chart at %s; teaching the pattern without a "
+                            "chart-specific read",
+                            detail,
+                            ticker,
+                            sim_date,
+                        )
+                        fired = {"name": detail, "message": "", "direction": "neutral"}
+                    patterns.teach(session_id, ticker, sim_date, fired, history)
         elif kind == "MARKET_SHOCK":
             # Rebuilt here rather than captured: this runs on a worker thread well after
             # the request that queued it, and each source holds a live DB-backed frame.
@@ -346,15 +411,83 @@ def _run_ai(kind: str, session_id: str, ticker: str, sim_date: date) -> None:
             _ai_inflight.discard(key)
 
 
-def _schedule_ai(kind: str, session_id: str, ticker: str, sim_date: date) -> bool:
-    """AI runs off the request path; results land in mcp_events and show up on a later tick."""
-    key = (session_id, kind, ticker)
+def _schedule_ai(
+    kind: str, session_id: str, ticker: str, sim_date: date, detail: str = ""
+) -> bool:
+    """AI runs off the request path; results land in mcp_events and show up on a later tick.
+
+    `detail` distinguishes two jobs that share a symbol and a kind - a lesson on a golden
+    cross and one on a volume spike are separate work, and keying only on the ticker would
+    drop the second while the first was still running.
+    """
+    key = (session_id, kind, ticker, detail) if detail else (session_id, kind, ticker)
     with _ai_lock:
         if key in _ai_inflight:
             return False
         _ai_inflight.add(key)
-    _ai_pool.submit(_run_ai, kind, session_id, ticker, sim_date)
+    _ai_pool.submit(_run_ai, kind, session_id, ticker, sim_date, detail)
     return True
+
+
+def _schedule_lesson(
+    session_id: str,
+    sim_date: date,
+    event_log: list[dict],
+    signals: list[dict],
+    days_since,
+    scheduled: list[dict],
+) -> None:
+    """Teach the pattern that just appeared on the player's own chart.
+
+    Two rules, and the split between them is the whole curriculum:
+
+    * A pattern this session has never taught is taught on sight. New material is the
+      expensive thing to get in front of someone, and a signal that just fired is the one
+      moment they are looking at it.
+    * A pattern they have already met is only revisited once `PATTERN_REPEAT_GAP_DAYS`
+      sessions have passed for that symbol, and only sometimes. Without this the feed
+      becomes the same card over and over, because MACD crosses far more often than the
+      other patterns.
+
+    The lesson is dated to the bar the signal actually printed on, not to the end of the
+    tick: a fast-forward hands us a whole walk of days at once, so the cross may be fifteen
+    bars behind the clock. Dating it `sim_date` made the coach describe a pattern on a bar
+    that no longer showed one - the card quoted the wrong session's prices and lost the
+    detector's own explanation, because re-reading the chart at the end of the walk finds
+    no such signal at all.
+    """
+    chosen = patterns.choose_new(signals, event_log)
+    if chosen is None:
+        candidate = patterns.choose_repeat(signals, event_log)
+        if candidate is None or random.random() >= config.PATTERN_REPEAT_PROBABILITY:
+            return
+        gap = days_since(patterns.LESSON_EVENT_TYPE, candidate["ticker"])
+        if gap is not None and gap < patterns.repeat_gap_days():
+            return
+        chosen = candidate
+
+    try:
+        lesson_date = _as_date(chosen["date"]) if chosen.get("date") else sim_date
+    except (TypeError, ValueError):
+        # A signal we produced ourselves always carries a date; a bad one must not turn a
+        # clock tick into a 500, so the walk's last day is the fallback.
+        log.warning("lesson signal %r has an unusable date %r", chosen["name"], chosen.get("date"))
+        lesson_date = sim_date
+    if _schedule_ai(
+        patterns.LESSON_EVENT_TYPE,
+        session_id,
+        chosen["ticker"],
+        lesson_date,
+        detail=chosen["name"],
+    ):
+        scheduled.append(
+            {
+                "kind": patterns.LESSON_EVENT_TYPE,
+                "ticker": chosen["ticker"],
+                "pattern": chosen["name"],
+                "date": lesson_date.isoformat(),
+            }
+        )
 
 
 def _maybe_schedule_ai(
@@ -363,6 +496,7 @@ def _maybe_schedule_ai(
     sim_date: date,
     event_log: list[dict],
     sources: dict,
+    signals: list[dict],
 ) -> list[dict]:
     """Queue whatever the cadence says is due. Returns [{kind, ticker}] entries."""
     scheduled: list[dict] = []
@@ -393,6 +527,11 @@ def _maybe_schedule_ai(
             if _schedule_ai("MARKET_SHOCK", session_id, shock_ticker, sim_date):
                 scheduled.append({"kind": "MARKET_SHOCK", "ticker": shock_ticker})
 
+    # Note this is not behind a dice roll like the others: if the player's chart produced
+    # a pattern they have never been taught, teaching it is the point of the feature.
+    if config.PATTERN_LESSONS and signals:
+        _schedule_lesson(session_id, sim_date, event_log, signals, days_since, scheduled)
+
     return scheduled
 
 
@@ -414,7 +553,7 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
     # A cold cache would otherwise fetch each symbol's history one at a time on the first
     # tick, which is where a fast-forward used to stall before it started moving.
     price_cache.prefetch(watchlist)
-    sources = price_source.for_watchlist(session)
+    sources = price_source.for_watchlist(session, watchlist)
 
     if session["status"] != "active":
         state = _state_from_bundle(bundle, focus)
@@ -451,7 +590,9 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
     )
 
     pending = (
-        _maybe_schedule_ai(session_id, watchlist, sim_date, bundle["events"], sources)
+        _maybe_schedule_ai(
+            session_id, watchlist, sim_date, bundle["events"], sources, signals
+        )
         if with_ai and not finished
         else []
     )
@@ -475,6 +616,11 @@ def execute_trade(
     if not session:
         raise GameError("Session not found")
 
+    if session["status"] != "active":
+        # The clock is the risk. Trading on after it stops would let a finished run be
+        # improved at frozen prices, which is exactly what the exercise is measuring.
+        raise GameError("This session is over. Start a new one to keep trading.")
+
     watchlist = database.session_tickers(session_id)
     ticker = (ticker or "").strip().upper()
     if ticker not in watchlist:
@@ -488,6 +634,10 @@ def execute_trade(
         quantity = Decimal(str(shares))
     except Exception:
         raise GameError("shares must be a number")
+    # Not just tidiness: an absurd or non-finite size survives the multiplication but blows
+    # up in quantize() as a decimal.InvalidOperation, which reached the player as a 500.
+    if not quantity.is_finite() or quantity > MAX_TRADE_SHARES:
+        raise GameError(f"shares must be between 0 and {MAX_TRADE_SHARES:,}")
     if quantity <= 0:
         raise GameError("shares must be greater than zero")
 
@@ -565,7 +715,7 @@ def fork_simulation(session_id: str, focus: str | None = None, **overrides) -> d
                 horizon_days=horizon,
                 drift=overrides.get("drift"),
                 volatility=overrides.get("volatility"),
-                seed=overrides.get("seed"),
+                seed=_seed_for(overrides.get("seed"), ticker),
             )
         except ValueError as exc:
             raise GameError(str(exc))
