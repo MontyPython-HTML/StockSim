@@ -280,35 +280,20 @@ Where each piece of this API actually lives, and the exact handler for each endp
 | Path | What it is |
 |---|---|
 | [`src/app.py`](../src/app.py) | Flask app, page routes (`/`, `/game/<id>`), JSON error handler |
-
 | [`src/routes/game_routes.py`](../src/routes/game_routes.py) | All `/api/*` route handlers (thin — parses the request, calls `engine`) |
-
 | [`src/scripts/game/engine.py`](../src/scripts/game/engine.py) | Game rules: sessions, trades, advancing days, scheduling AI calls |
-
 | [`src/scripts/game/indicators.py`](../src/scripts/game/indicators.py) | SMA/RSI/MACD/volume math and signal detection |
-
 | [`src/scripts/game/price_cache.py`](../src/scripts/game/price_cache.py) | In-memory price/indicator cache per ticker |
-
 | [`src/scripts/database/database.py`](../src/scripts/database/database.py) | All TigerData (TimescaleDB) reads/writes |
-
 | [`src/scripts/database/schema.sql`](../src/scripts/database/schema.sql) | Table definitions |
-
 | [`src/scripts/api/nessie.py`](../src/scripts/api/nessie.py) | Nessie client (mock or real, same interface) |
-
 | [`src/scripts/api/gemini_mcp_client.py`](../src/scripts/api/gemini_mcp_client.py) | Flask-side MCP client (talks to the MCP server subprocess) |
-
 | [`src/mcp_server/server.py`](../src/mcp_server/server.py) | The MCP server — tools Gemini/Flask can call |
-
 | [`src/mcp_server/gemini_tools.py`](../src/mcp_server/gemini_tools.py) | Gemini prompt building + calling |
-
 | [`src/scripts/ingestion/ingest_prices.py`](../src/scripts/ingestion/ingest_prices.py) | CLI to load historical prices into TigerData |
-
 | [`src/static/js/game.js`](../src/static/js/game.js) | Frontend: calls the API, drives play/pause/speed |
-
 | [`src/static/js/chart-setup.js`](../src/static/js/chart-setup.js) | Frontend: Chart.js setup |
-
 | [`src/templates/index.html`](../src/templates/index.html) | Start-session page |
-
 | [`src/templates/game.html`](../src/templates/game.html) | Game screen |
 
 | Method | Path | Handler |
