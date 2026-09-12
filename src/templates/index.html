@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
-<link rel="stylesheet" href="/static/prod/output.css">
+
 
 <head>
     <meta charset="UTF-8">
@@ -9,10 +9,23 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='prod/output.css') }}">
     <title>Flask + Tailwind</title>
 </head>
-<body class="bg-gray-100 flex items-center justify-center h-screen">
-    <div class="text-center bg-white p-8 rounded-lg shadow-md">
-        <h1 class="text-3xl font-bold text-blue-600 mb-2">Success!</h1>
-        <p class="text-gray-600">Tailwind CSS is now styling your Flask application.</p>
+<body class="bg-gray-100 p-8">
+    <div class="mx-auto max-w-4xl">
+        <div class="overflow-hidden rounded-lg border border-gray-300 bg-white">
+            <div class="border-b border-gray-300 bg-gray-50 px-5 py-3">
+                <h2 class="font-semibold">{{ ticker }}</h2>
+            </div>
+
+        </div>
+        <div>
+            <h1 class="text-red-50"> TO BE CONTINUED</h1>
+
+
+        </div>
+
     </div>
+    
+
+
 </body>
 </html>
