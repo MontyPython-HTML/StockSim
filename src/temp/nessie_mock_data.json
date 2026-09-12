@@ -1,0 +1,57 @@
+{
+  "customers": [
+    {
+      "_id": "mock-customer-001",
+      "first_name": "Demo",
+      "last_name": "Trader",
+      "address": {
+        "street_number": "6100",
+        "street_name": "Main St",
+        "city": "Houston",
+        "state": "TX",
+        "zip": "77005"
+      }
+    },
+    {
+      "_id": "mock-customer-002",
+      "first_name": "Casey",
+      "last_name": "Novice",
+      "address": {
+        "street_number": "1600",
+        "street_name": "Pennsylvania Ave",
+        "city": "Washington",
+        "state": "DC",
+        "zip": "20500"
+      }
+    }
+  ],
+  "accounts": [
+    {
+      "_id": "mock-account-001",
+      "type": "Checking",
+      "nickname": "Trading Cash",
+      "rewards": 0,
+      "balance": 10000,
+      "account_number": "1000000000000001",
+      "customer_id": "mock-customer-001"
+    },
+    {
+      "_id": "mock-account-002",
+      "type": "Savings",
+      "nickname": "Emergency Fund",
+      "rewards": 120,
+      "balance": 25000,
+      "account_number": "1000000000000002",
+      "customer_id": "mock-customer-001"
+    },
+    {
+      "_id": "mock-account-003",
+      "type": "Checking",
+      "nickname": "Starter Account",
+      "rewards": 0,
+      "balance": 2500,
+      "account_number": "1000000000000003",
+      "customer_id": "mock-customer-002"
+    }
+  ]
+}

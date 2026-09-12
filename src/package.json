@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "build:css": "tailwindcss -i ./static/input/input.css -o ./static/prod/output.css --minify",
+    "watch:css": "tailwindcss -i ./static/input/input.css -o ./static/prod/output.css --watch"
+  },
   "devDependencies": {
     "@tailwindcss/cli": "^4.3.3",
     "tailwindcss": "^4.3.3"
