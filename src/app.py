@@ -1,7 +1,9 @@
 import math
 import os
+import threading
 from datetime import date, datetime
 from decimal import Decimal
+from uuid import UUID
 
 from flask import Flask, redirect, render_template, url_for
 from flask.json.provider import DefaultJSONProvider
@@ -61,6 +63,23 @@ with app.app_context():
         app.logger.warning("could not apply schema at startup", exc_info=True)
 
 
+def _warm_ai_import() -> None:
+    """Import the MCP stack in the background so the first click does not pay for it.
+
+    The engine imports the MCP client lazily to keep this app's boot path clear of it,
+    but that only moved the cost onto the player: the first tick that schedules anything
+    waits on ~1s of imports while it holds the interpreter lock. Doing it here keeps boot
+    fast and the first tick fast.
+    """
+    try:
+        from scripts.api import gemini_mcp_client  # noqa: F401
+    except Exception:  # noqa: BLE001 - an unusable MCP stack is reported per request
+        app.logger.warning("MCP client import failed; AI features will report it", exc_info=True)
+
+
+threading.Thread(target=_warm_ai_import, name="warm-ai-import", daemon=True).start()
+
+
 @app.errorhandler(GameError)
 def handle_game_error(error: GameError):
     return {"error": str(error)}, 400
@@ -94,6 +113,13 @@ def home():
 
 @app.route('/game/<session_id>')
 def game(session_id: str):
+    # A malformed id is a missing session, not a crash: the id goes straight into a uuid
+    # column, so /game/garbage raised InvalidTextRepresentation and served a 500 page
+    # instead of sending the player back to the picker.
+    try:
+        UUID(session_id)
+    except ValueError:
+        return redirect(url_for('home'))
     session = database.get_session(session_id)
     if not session:
         return redirect(url_for('home'))

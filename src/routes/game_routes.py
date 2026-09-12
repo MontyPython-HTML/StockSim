@@ -204,6 +204,8 @@ def session_basket(session_id: str):
             session,
             bundle["trades"],
             _optional_int(request.args.get("window"), "window"),
+            # The watchlist is already in the bundle this request just loaded.
+            bundle.get("watchlist"),
         )
     )
 
@@ -345,6 +347,11 @@ def inject_shock(session_id: str):
     if not 0 <= magnitude <= 1:
         raise GameError("magnitude must be between 0 and 1")
 
+    decay_days = _optional_int(body.get("decay_days"), "decay_days")
+    if decay_days is not None and decay_days < 1:
+        # `or 10` used to swallow a 0 and quietly run a different event than asked for.
+        raise GameError("decay_days must be at least 1")
+
     sector = body.get("sector") or sectors.get(ticker, {}).get("sector")
     event = {
         "ticker": ticker,
@@ -355,7 +362,7 @@ def inject_shock(session_id: str):
         "summary": body.get("summary", ""),
         "sentiment": sentiment,
         "magnitude": magnitude,
-        "decay_days": _optional_int(body.get("decay_days"), "decay_days") or 10,
+        "decay_days": decay_days if decay_days is not None else config.SHOCK_DECAY_DAYS,
         "lesson": body.get("lesson", ""),
         "fictional": True,
         "source": "manual",

@@ -214,6 +214,105 @@ Context (the only data you may reference):
     }
 
 
+def generate_pattern_lesson(
+    ticker: str,
+    as_of: date,
+    df: pd.DataFrame,
+    pattern: dict,
+    signal: str,
+    context: dict | None = None,
+) -> dict:
+    """Teach one chart pattern, using the player's own chart as the example.
+
+    `pattern` is the reference entry from the local syllabus rather than a name the model
+    is asked to interpret, and it is included in the prompt on purpose: the coach has to
+    explain the pattern the detector actually found, at the depth the syllabus sets. Left
+    to itself the model drifts into a generic encyclopedia entry, and the player ends up
+    reading about a pattern that is not on their screen.
+
+    `context` is the indicator reading on the day the signal fired, so the lesson can say
+    "RSI is 78" instead of "RSI above 70".
+    """
+    readings = context or {}
+    lines = [
+        f"- close: {readings.get('close')}",
+        f"- RSI(14): {readings.get('rsi14')}",
+        f"- SMA20: {readings.get('sma20')}",
+        f"- SMA50: {readings.get('sma50')}",
+        f"- MACD: {readings.get('macd')} (signal {readings.get('macd_signal')}, histogram {readings.get('macd_hist')})",
+        f"- volume: {readings.get('volume')} against a 20-day average of {readings.get('volume_avg20')}",
+    ]
+    spots = "\n".join(f"  {index}. {step}" for index, step in enumerate(pattern["how_to_spot"], start=1))
+    prompt = f"""You are a trading coach in a teaching simulator. Today is {as_of} and the student
+is watching {ticker}. A pattern detector just fired on their chart:
+
+  pattern: {pattern['name']} ({pattern['family']})
+  detected: {signal}
+  the question it raises: {pattern['tension']}
+
+The chart on their screen, as of today:
+{chr(10).join(lines)}
+
+Recent price and indicator history:
+{format_context(df)}
+
+Explain this pattern to a beginner who is looking at the numbers above right now. Ground every
+claim in the values listed - name the actual RSI reading, the actual averages - so the lesson
+points at their chart and not at a textbook.
+
+The reference explanation this curriculum is built on (stay consistent with it, deepen it, do
+not contradict it):
+  what it is: {pattern['what_it_is']}
+  how to spot it:
+{spots}
+  why it matters: {pattern['why_it_matters']}
+  common mistake: {pattern['common_mistake']}
+  watch next: {pattern['watch_next']}
+
+Reply as JSON with exactly these keys:
+- "what_it_is": 2 sentences in plain English, referring to this chart's numbers
+- "how_to_spot": array of 2-4 short strings, each a concrete check the student can make on
+  this chart (e.g. "SMA20 at 182.40 is only just above SMA50 at 181.05")
+- "why_it_matters": 1 sentence on what a disciplined trader does about it
+- "common_mistake": 1 sentence on how a beginner misreads this exact situation
+- "watch_next": 1 sentence naming the level or signal that would confirm or invalidate it
+- "confidence": number 0-1, how clear-cut this example is on the chart above
+- "lesson": one sentence summarising the takeaway
+"""
+    data = generate_json(prompt)
+
+    def bound(value, fallback: float) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return fallback
+
+    def text(key: str, fallback: str) -> str:
+        value = data.get(key)
+        return str(value).strip() if value else fallback
+
+    steps = data.get("how_to_spot")
+    if not isinstance(steps, list) or not steps:
+        steps = list(pattern["how_to_spot"])
+    return {
+        "pattern": pattern["slug"],
+        "name": pattern["name"],
+        "family": pattern["family"],
+        "what_it_is": text("what_it_is", pattern["what_it_is"]),
+        "how_to_spot": [str(step) for step in steps],
+        "why_it_matters": text("why_it_matters", pattern["why_it_matters"]),
+        "common_mistake": text("common_mistake", pattern["common_mistake"]),
+        "watch_next": text("watch_next", pattern["watch_next"]),
+        "confidence": bound(data.get("confidence"), 0.5),
+        "lesson": data.get("lesson", ""),
+        "ticker": ticker,
+        "as_of": as_of.isoformat(),
+        "source": "gemini",
+        "fictional": False,
+        "disclaimer": DISCLAIMER,
+    }
+
+
 def generate_news_event(ticker: str, as_of: date, df: pd.DataFrame) -> dict:
     recent_close = float(df["close"].iloc[-1]) if not df.empty else 0.0
     prompt = f"""Invent one fictional market news headline for a trading simulator. The stock is

@@ -11,6 +11,7 @@ source once and then stops caring which sort it got.
 
 import threading
 from datetime import date, timedelta
+from typing import Iterable
 
 import pandas as pd
 
@@ -70,10 +71,10 @@ class SimulatedSource:
     def _build(self) -> pd.DataFrame:
         # The *whole* real series, not a lookback window: the chart and the indicators
         # have to span the real days a session replays, not just the last year before the
-        # fork. price_cache already holds the per-ticker frame, so this costs no query.
+        # fork. price_cache already holds the per-ticker frame, so this costs no query,
+        # and simulation keeps the splice-and-recompute result for the next request.
         real = price_cache.history_through(self.ticker, self.config.fork_date)
-        future = simulation.future_frame(self.session_id, self.config)
-        return simulation.merge_with_history(real, future)
+        return simulation.merged_frame(self.session_id, self.config, real)
 
     def _merged(self) -> pd.DataFrame:
         if self._frame is None:
@@ -189,11 +190,17 @@ def for_session(session: dict, ticker: str) -> RealSource | SimulatedSource:
     return RealSource(ticker)
 
 
-def for_watchlist(session: dict) -> dict[str, RealSource | SimulatedSource]:
-    """Every source for a session, keyed by ticker, in one round trip to the DB."""
+def for_watchlist(
+    session: dict, tickers: Iterable[str] | None = None
+) -> dict[str, RealSource | SimulatedSource]:
+    """Every source for a session, keyed by ticker, in one round trip to the DB.
+
+    `tickers` lets a caller that already holds the watchlist - every caller that came
+    through `load_session_bundle` does - skip re-reading it from the database.
+    """
     session_id = str(session["id"])
     rows = {row["ticker"]: row for row in database.get_simulations(session_id)}
-    watchlist = database.session_tickers(session_id)
+    watchlist = list(tickers) if tickers else database.session_tickers(session_id)
     return {
         ticker: SimulatedSource(session_id, rows[ticker])
         if ticker in rows
@@ -231,4 +238,7 @@ def fork_session(session_id: str, ticker: str, fork_date: date, **overrides) -> 
     database.create_simulation(session_id, **config_.persist_fields())
     source = SimulatedSource(session_id, config_.persist_fields())
     simulation.ensure_future(session_id, config_)
+    # Unconditional: the stored config just changed, and a cached frame was built from the
+    # old one even if every bar it holds happens to be the same.
+    simulation.invalidate(session_id, ticker)
     return source
