@@ -1,13 +1,9 @@
-<<<<<<< HEAD
-from flask import Flask
+import os
+from flask import Flask, render_template
 from google import genai
 from dotenv import load_dotenv
 import yfinance as yf
 
-=======
-import os
-from flask import Flask, render_template
->>>>>>> df13ed8e8b007daef3dd886d2aaa1a4ffdde1f3d
 
 base_dir = os.path.abspath(os.path.dirname(__file__))
 template_dir = os.path.join(base_dir, 'templates')
