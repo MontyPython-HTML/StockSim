@@ -1,0 +1,57 @@
+# Flask Specific
+instance/
+.webassets-cache
+flask_session/
+
+# Environments & Credentials (CRITICAL)
+.env
+.flaskenv
+*.env
+secrets.json
+
+# Python Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+pyenv/
+
+# Byte-compiled / Optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Distribution / Packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+.DS_Store
+
