@@ -26,7 +26,7 @@ from decimal import Decimal
 import config
 from scripts.api import nessie
 from scripts.database import database
-from scripts.game import events, expenses, indicators, patterns, price_cache, price_source
+from scripts.game import events, expenses, indicators, news, patterns, price_cache, price_source
 
 DEFAULT_CHART_WINDOW = 180
 
@@ -166,7 +166,8 @@ def _state_from_bundle(
     quote_rows = _quotes(session_id, watchlist, sim_date)
     closes = {ticker: row["close"] for ticker, row in quote_rows.items()}
 
-    focus_source = price_source.for_session(session, focus)
+    sources = price_source.for_watchlist(session, watchlist)
+    focus_source = sources[focus]
     history = focus_source.history_through(sim_date)
     ledger = bundle.get("expenses") or []
     bills_paid = sum(float(row["amount"]) for row in ledger if (row.get("kind") or "bill") == "bill")
@@ -224,6 +225,7 @@ def _state_from_bundle(
             "charged": [expenses.ledger_row(row) for row in ledger],
         },
         "bank": {"source": nessie.source_label(), **expenses.bank_for(session)},
+        "news": news.headlines(session, sim_date, bundle["events"], sources),
     }
 
 

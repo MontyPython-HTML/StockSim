@@ -583,6 +583,18 @@ def ticker_sectors(tickers: Iterable[str] | None = None) -> dict[str, dict]:
         }
 
 
+def company_names(tickers: Iterable[str]) -> dict[str, str]:
+    wanted = [ticker.upper() for ticker in tickers]
+    if not wanted:
+        return {}
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT ticker, company_name FROM tickers WHERE ticker = ANY(%s::text[])",
+            (wanted,),
+        )
+        return {row["ticker"]: row["company_name"] for row in cur.fetchall()}
+
+
 def universe_stats() -> dict:
     with get_cursor() as cur:
         cur.execute(

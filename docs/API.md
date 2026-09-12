@@ -717,5 +717,29 @@ card in a waiting state, and polls `GET /state` until the matching `PATTERN_LESS
 Gemini is unreachable the lesson still arrives from the built-in syllabus
 ([`patterns.py`](../src/scripts/game/patterns.py)) with `source: "offline"`.
 
-The walkthrough is an eleven-step tour over the real panels, shown automatically on a first
+The walkthrough is a thirteen-step tour over the real panels, shown automatically on a first
 visit and re-openable from **How this works** in the header.
+
+Signals from `/advance` do not pop up as notifications. They go into the **Signals** drawer on
+the right edge, whose tab counts the unread ones; the walkthrough points it out.
+
+## The newswire
+
+`GET /state` and `POST /advance` include **`news`**: newest first, at most 40 stories from the
+last 15 trading days of every watched symbol ([`news.py`](../src/scripts/game/news.py)).
+
+```json
+{ "news": [
+    { "id": "3f1c9a0b2e7d", "date": "2023-03-01", "ticker": "MSFT",
+      "headline": "MSFT tumbles 4.6% in heavy selling", "major": true },
+    { "id": "a81d44c0f913", "date": "2023-03-01", "ticker": "AAPL",
+      "headline": "Apple Inc. updates its employee travel policy", "major": false }
+] }
+```
+
+- **Major** stories are the days a stock moved at least 4% or traded 2.5x its 20-day average
+  volume - the headline states the move, never an invented cause - plus the `NEWS_EVENT` and
+  `MARKET_SHOCK` headlines from `ai_feed`.
+- **Filler** is invented routine company news, on roughly 40% of each symbol's trading days.
+- Stories are seeded by session, symbol and date, so they never change between refreshes and
+  never appear before their date. The page does not show `major`: sorting is the exercise.

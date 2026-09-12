@@ -145,6 +145,17 @@
                             </span>
                         </span>
                     </label>
+                    <label id="alerts-row" class="mt-4 flex cursor-pointer items-start gap-3">
+                        <input type="checkbox" id="alerts-toggle" checked
+                            class="mt-1 h-5 w-5 shrink-0 accent-accent">
+                        <span>
+                            <span class="block font-semibold">Transaction alerts</span>
+                            <span class="block text-sm text-dim">
+                                Pop up a card when a bill is paid, a paycheck lands, the bank sells
+                                shares, or one of my trades fills.
+                            </span>
+                        </span>
+                    </label>
                 </div>
             </section>
 
@@ -311,6 +322,24 @@
                     <div id="ai-feed" class="max-h-[28rem] space-y-4 overflow-y-auto text-sm">
                         <p class="text-xs text-dim">Reads, headlines, shocks and pattern lessons show up here.</p>
                     </div>
+                </div>
+
+                <div id="news-panel" class="rounded-3xl border border-line bg-surface p-6">
+                    <div class="mb-1 flex items-center justify-between gap-3">
+                        <h2 class="text-lg font-semibold">News</h2>
+                        <span id="news-count"
+                            class="rounded-full border border-line px-3 py-1 text-xs text-muted">&mdash;</span>
+                    </div>
+                    <p class="mb-4 text-xs text-dim">
+                        Headlines about the stocks you picked. Most of it will not move the price.
+                    </p>
+                    <div id="news-feed" class="max-h-[28rem] space-y-2 overflow-y-auto text-sm">
+                        <p class="text-xs text-dim">Headlines show up as the clock moves.</p>
+                    </div>
+                    <p class="mt-4 border-t border-line pt-4 text-[11px] leading-relaxed text-dim">
+                        Practice newswire: stories about price moves come from the real chart, and the
+                        rest is made up.
+                    </p>
                 </div>
 
                 <div id="bank-panel" class="rounded-3xl border border-line bg-surface p-6">

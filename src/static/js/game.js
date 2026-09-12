@@ -52,12 +52,14 @@ let feedTimer = null;
 // lesson lands. `shownLessons` stops a lesson already taught from re-opening every time the
 // feed is re-rendered.
 const TEACHER_KEY = 'tradingTeacher.teacherMode';
+const ALERTS_KEY = 'tradingTeacher.transactionAlerts';
 const TOUR_KEY = 'tradingTeacher.tourDone';
 const LESSON_POLL_MS = 1200;
 // Past this the lesson is almost certainly not coming (no key, dead subprocess, Gemini
 // rate-limited). The player is let go rather than left staring at a spinner.
 const LESSON_WAIT_MS = 30000;
 let teacherMode = true;
+let showAlerts = true;
 let awaitingLesson = null;
 let lessonPollTimer = null;
 let lessonWaitStarted = 0;
@@ -250,6 +252,27 @@ function renderBank(state) {
         + ' If your cash cannot cover a bill, the bank sells your shares to pay it.';
 }
 
+let newsSignature = null;
+
+function renderNews(state) {
+    const stories = state.news || [];
+    const signature = stories.map((story) => story.id).join('|');
+    if (signature === newsSignature) return;
+    newsSignature = signature;
+
+    el('news-count').textContent = `${stories.length} ${stories.length === 1 ? 'story' : 'stories'}`;
+    el('news-feed').innerHTML = stories.length
+        ? stories.map((story) => `
+            <article class="rounded-xl border border-line bg-ink-soft px-3 py-2">
+                <div class="flex items-baseline justify-between gap-2 text-xs text-dim">
+                    <span class="font-mono">${esc(story.ticker)}</span>
+                    <span class="tabular-nums">${story.date}</span>
+                </div>
+                <p class="mt-1 leading-snug">${esc(story.headline)}</p>
+            </article>`).join('')
+        : '<p class="text-xs text-dim">Headlines show up as the clock moves.</p>';
+}
+
 function renderBasketNote(payload) {
     const series = payload.series || [];
     const note = el('basket-note');
@@ -303,6 +326,7 @@ function render(state) {
     renderBank(state);
     updateCharts(charts, state);
     renderFeed(state.ai_feed);
+    renderNews(state);
     renderPatterns(state.patterns);
 
     if (state.status === 'finished') finish(state);
@@ -491,7 +515,6 @@ function logSignals(signals) {
             </div>
             <p class="text-xs text-muted mt-1 leading-relaxed">${signal.message}</p>`;
         log.prepend(node);
-        toast(`${signal.ticker} · ${signal.name}`, signal.message, signal.direction);
     }
     signalTotal += signals.length;
     if (!signalsOpen) signalUnread += signals.length;
@@ -501,6 +524,7 @@ function logSignals(signals) {
 // A bill leaving the account is an event the player should feel, not something they
 // discover later by noticing the cash number is smaller.
 function logCharges(charges) {
+    if (!showAlerts) return;
     for (const charge of charges) {
         if (charge.kind === 'salary') {
             toast(
@@ -532,8 +556,12 @@ function toast(title, message, direction) {
     const tone = direction === 'bullish' ? 'border-up' :
         direction === 'bearish' ? 'border-down' : 'border-line-strong';
     const node = document.createElement('div');
-    node.className = `rounded-xl border border-line border-l-4 ${tone} bg-surface p-4 shadow-xl`;
-    node.innerHTML = `<div class="font-semibold mb-1">${title}</div><p class="text-sm text-muted leading-relaxed">${message}</p>`;
+    node.className = `relative rounded-xl border border-line border-l-4 ${tone} bg-surface p-4 pr-11 shadow-xl`;
+    node.innerHTML = `
+        <button type="button" aria-label="Dismiss"
+            class="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded-full text-lg leading-none text-muted transition hover:bg-raised hover:text-white">&times;</button>
+        <div class="font-semibold mb-1">${title}</div><p class="text-sm text-muted leading-relaxed">${message}</p>`;
+    node.querySelector('button').addEventListener('click', () => node.remove());
     el('toasts').appendChild(node);
     setTimeout(() => node.remove(), 9000);
 }
@@ -750,7 +778,7 @@ async function trade(side, ticker, explicitShares) {
             body: JSON.stringify({ ticker: target, side, shares, focus: focus || target }),
         }));
         scheduleBasket(0);
-        toast(`${side} ${shares} ${target}`, `Filled at the close on ${latestState.sim_date}.`, 'neutral');
+        if (showAlerts) toast(`${side} ${shares} ${target}`, `Filled at the close on ${latestState.sim_date}.`, 'neutral');
     } catch (error) {
         errorBox.textContent = error.message;
         errorBox.classList.remove('hidden');
@@ -797,6 +825,12 @@ function setTeacherMode(on) {
     teacherMode = on;
     el('teacher-mode').checked = on;
     try { localStorage.setItem(TEACHER_KEY, on ? '1' : '0'); } catch { /* private mode */ }
+}
+
+function setAlerts(on) {
+    showAlerts = on;
+    el('alerts-toggle').checked = on;
+    try { localStorage.setItem(ALERTS_KEY, on ? '1' : '0'); } catch { /* private mode */ }
 }
 
 function openCoach(job) {
@@ -971,6 +1005,14 @@ const TOUR_STEPS = [
             + 'each one the first time it shows up.',
     },
     {
+        target: 'signals-toggle',
+        title: 'Signals',
+        body: 'When a pattern prints on one of your stocks - a moving-average cross, RSI running '
+            + 'hot, a volume spike - it lands in this drawer quietly instead of popping up over the '
+            + 'chart. The number on the tab counts the ones you have not read yet. Click it '
+            + 'whenever you want to look through them.',
+    },
+    {
         target: 'buy-btn',
         title: 'Buying and selling',
         body: 'Type a number of shares and press Buy or Sell. Trades fill at the closing price of '
@@ -997,6 +1039,14 @@ const TOUR_STEPS = [
         body: 'Chart reads, invented headlines and pattern lessons all land here. Ask for a read '
             + 'at any time to get an opinion on the stock you are looking at, quoting the exact '
             + 'numbers it used.',
+    },
+    {
+        target: 'news-panel',
+        title: 'The newswire',
+        body: 'Headlines about the stocks you picked land here every day. Most of it is noise - '
+            + 'conference talks, office moves, routine filings. A few stories actually matter, and '
+            + 'those tend to show up in the price. Nothing is labelled, so part of the game is '
+            + 'learning to tell them apart before you trade on one.',
     },
     {
         target: 'pattern-list',
@@ -1035,10 +1085,13 @@ function spotlight(element) {
         boxShadow: element.style.boxShadow,
         borderRadius: element.style.borderRadius,
     };
-    element.style.position = 'relative';
+    // A fixed element (the signals tab) keeps its own position and shape.
+    if (getComputedStyle(element).position === 'static') {
+        element.style.position = 'relative';
+        element.style.borderRadius = '1.5rem';
+    }
     element.style.zIndex = '65';
     element.style.boxShadow = '0 0 0 3px #3b82f6, 0 0 45px rgba(59,130,246,0.35)';
-    element.style.borderRadius = '1.5rem';
 }
 
 function placeCard(element) {
@@ -1112,6 +1165,7 @@ el('play-btn').addEventListener('click', () => (timer ? pause() : play()));
 el('step-btn').addEventListener('click', () => advance(1));
 
 el('teacher-mode').addEventListener('change', (event) => setTeacherMode(event.target.checked));
+el('alerts-toggle').addEventListener('change', (event) => setAlerts(event.target.checked));
 el('coach-continue').addEventListener('click', () => closeCoach(false));
 el('coach-resume').addEventListener('click', () => closeCoach(true));
 
@@ -1293,12 +1347,15 @@ async function checkAI() {
 
 (async function start() {
     let savedTeacher = null;
+    let savedAlerts = null;
     let tourDone = null;
     try {
         savedTeacher = localStorage.getItem(TEACHER_KEY);
+        savedAlerts = localStorage.getItem(ALERTS_KEY);
         tourDone = localStorage.getItem(TOUR_KEY);
     } catch { /* private mode */ }
     setTeacherMode(savedTeacher === null ? true : savedTeacher === '1');
+    setAlerts(savedAlerts === null ? true : savedAlerts === '1');
 
     await loadCompanyNames();
     checkAI();
