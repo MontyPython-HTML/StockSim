@@ -1,5 +1,39 @@
-def main() -> None:
-    pass
+from datetime import date, timedelta
 
-if __name__ == "__main__":
-    main()
+import pandas as pd
+import yfinance as yf
+
+
+def fetch_ohlcv(ticker: str, start: date, end: date) -> pd.DataFrame:
+    #end param is exclusive
+    raw = yf.Ticker(ticker).history(
+        start=start.isoformat(),
+        end=(end + timedelta(days=1)).isoformat(),
+        interval="1d",
+        auto_adjust=False,
+    )
+    if raw.empty:
+        return raw
+    raw = raw.reset_index()
+    raw["Date"] = pd.to_datetime(raw["Date"]).dt.date
+    return raw
+
+
+def to_price_rows(ticker: str, frame: pd.DataFrame) -> list[tuple]:
+    if frame.empty:
+        return []
+    adj_column = "Adj Close" if "Adj Close" in frame.columns else "Close"
+    return [
+        (
+            ticker.upper(),
+            row["Date"],
+            float(row["Open"]),
+            float(row["High"]),
+            float(row["Low"]),
+            float(row["Close"]),
+            float(row[adj_column]),
+            int(row["Volume"]),
+        )
+        for _, row in frame.iterrows()
+        if pd.notna(row["Close"])
+    ]
