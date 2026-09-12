@@ -194,8 +194,11 @@ function updateCharts(charts, state) {
     price.data.datasets[1].data = rows.map((r) => r.sma20);
     price.data.datasets[2].data = rows.map((r) => r.sma50);
 
+    // Only this symbol's fills belong on this symbol's chart: a marker is drawn at the raw
+    // trade price, so a $120 PEP fill on a $42 AAPL axis would drag the scale to fit it and
+    // squash the candles the player is actually reading.
     const toMarkers = (side) => state.trades
-        .filter((t) => t.side === side && index.has(t.date))
+        .filter((t) => t.side === side && t.ticker === state.focus && index.has(t.date))
         .map((t) => ({ x: index.get(t.date), y: t.price }));
     price.data.datasets[3].data = toMarkers('BUY');
     price.data.datasets[4].data = toMarkers('SELL');
