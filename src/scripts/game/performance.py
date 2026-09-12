@@ -133,13 +133,15 @@ def equity_curve(session: dict, trades: list[dict], frames: dict, dates: list[st
     return curve
 
 
-def basket(session: dict, trades: list[dict], window_days: int | None = None) -> dict:
+def basket(
+    session: dict, trades: list[dict], window_days: int | None = None, tickers: list[str] | None = None
+) -> dict:
     """Every watched symbol rebased to 100, plus the account's equity over the same window."""
     window = int(window_days or DEFAULT_BASKET_WINDOW)
     window = max(20, min(window, MAX_BASKET_WINDOW))
 
     sim_date = _as_date(session["sim_date"])
-    sources = price_source.for_watchlist(session)
+    sources = price_source.for_watchlist(session, tickers)
 
     frames: dict = {}
     series: list[dict] = []

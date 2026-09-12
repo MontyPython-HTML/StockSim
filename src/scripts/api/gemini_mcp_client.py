@@ -200,6 +200,39 @@ def predict_or_raise(session_id: str, ticker: str, as_of: date) -> dict:
     return payload
 
 
+def pattern_lesson(
+    session_id: str,
+    ticker: str,
+    as_of: date,
+    pattern: str,
+    signal: str = "",
+    context: dict | None = None,
+) -> dict | None:
+    """A lesson on one chart pattern. Logged by the caller, not here.
+
+    `pattern` is a syllabus name; the MCP server refuses anything it does not recognise,
+    so a typo becomes a clear error rather than an invented lesson. `signal` is the
+    detector's own wording for what fired and `context` is the indicator reading at that
+    moment, which is what lets the lesson quote the player's own numbers.
+    """
+    try:
+        client = get_client()
+        payload = client.call_tool(
+            "explain_pattern",
+            {
+                "session_id": session_id,
+                "ticker": ticker,
+                "as_of_date": as_of.isoformat(),
+                "pattern": pattern,
+                "signal": signal,
+            },
+        )
+        return None if payload.get("error") else payload
+    except Exception as exc:
+        log.warning("MCP pattern lesson unavailable: %s: %s", type(exc).__name__, exc)
+        return None
+
+
 def probe() -> tuple[bool, str]:
     """Is the MCP subprocess actually reachable? Used by the status endpoint."""
     try:

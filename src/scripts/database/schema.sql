@@ -96,7 +96,7 @@ CREATE INDEX IF NOT EXISTS idx_transactions_session ON transactions (session_id,
 CREATE TABLE IF NOT EXISTS mcp_events (
     id          BIGSERIAL,
     session_id  UUID NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
-    event_type  TEXT NOT NULL CHECK (event_type IN ('PREDICTION','NEWS_EVENT','MARKET_SHOCK')),
+    event_type  TEXT NOT NULL CHECK (event_type IN ('PREDICTION','NEWS_EVENT','MARKET_SHOCK','PATTERN_LESSON')),
     ticker      TEXT NOT NULL,
     sim_date    DATE NOT NULL,
     payload     JSONB NOT NULL,
@@ -104,11 +104,11 @@ CREATE TABLE IF NOT EXISTS mcp_events (
     PRIMARY KEY (id, created_at)
 );
 
--- Existing deployments were created before MARKET_SHOCK existed, and
+-- Existing deployments were created before MARKET_SHOCK and PATTERN_LESSON existed, and
 -- CREATE TABLE IF NOT EXISTS will not widen their check constraint for them.
 ALTER TABLE mcp_events DROP CONSTRAINT IF EXISTS mcp_events_event_type_check;
 ALTER TABLE mcp_events ADD CONSTRAINT mcp_events_event_type_check
-    CHECK (event_type IN ('PREDICTION','NEWS_EVENT','MARKET_SHOCK'));
+    CHECK (event_type IN ('PREDICTION','NEWS_EVENT','MARKET_SHOCK','PATTERN_LESSON'));
 
 SELECT create_hypertable(
     'mcp_events', 'created_at',
