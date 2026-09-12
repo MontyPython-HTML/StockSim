@@ -133,12 +133,16 @@ Starts a new game session: picks the first available trading day on/after `start
   "start_date": "2023-03-01",
   "end_date": "2023-12-31",
   "nessie_customer_id": "mock-customer-001",
+  "salary_amount": 2100,
   "simulate_future": false
 }
 ```
 - `ticker` — required.
 - `start_date`, `end_date` — required, `YYYY-MM-DD`.
 - `nessie_customer_id` — optional; defaults to `NESSIE_DEFAULT_CUSTOMER_ID` (`.env`).
+- `salary_amount` — optional paycheck paid every other Friday, any amount. Left out, it
+  defaults to the customer's latest `Payroll - <employer>` deposit in Nessie; `0` (or less)
+  means no salary. See [Paychecks](#paychecks).
 - `simulate_future` — optional, default `false`. When `true`, the session forks at the
   end of the real data and keeps going into a generated future of its own; `end_date` in
   the response is then extended to the end of that horizon. Optional `horizon_days`,
@@ -153,7 +157,8 @@ Starts a new game session: picks the first available trading day on/after `start
     "source": "Nessie (local mock)",
     "account_nickname": "Trading Cash",
     "account_type": "Checking",
-    "balance": 10000.0
+    "balance": 10000.0,
+    "paycheck": 2100.0
   }
 }
 ```
@@ -565,9 +570,10 @@ Where each piece of this API actually lives, and the exact handler for each endp
 
 ## Bills and the bank account
 
-Starting cash comes from a Nessie account, and so do that account's standing orders. As the
-clock passes each bill's day of the month the money leaves the same cash balance the player
-trades with — which can push it negative.
+Starting cash comes from a Nessie account, and so do that account's standing orders and its
+paycheck. As the clock passes each bill's day of the month the money leaves the same cash
+balance the player trades with. Cash never goes below zero: a bill the cash cannot cover
+makes the bank sell shares (see [Cash never goes below zero](#cash-never-goes-below-zero)).
 
 Relevant files: [`src/scripts/game/expenses.py`](../src/scripts/game/expenses.py) (the rules),
 [`src/scripts/api/nessie.py`](../src/scripts/api/nessie.py) (the client),
@@ -592,44 +598,114 @@ With `NESSIE_USE_MOCK=true` the same shapes are served from
 {
   "portfolio": {
     "bills_paid": 3739.0,
+    "salary_earned": 4200.0,
     "trading_return_pct": 0.0,
-    "total_return_pct": -37.39,
+    "total_return_pct": 4.61,
     "overdrawn": false
   },
   "expenses": {
     "bill_count": 8,
     "monthly_total": 2769.0,
     "paid_to_date": 3739.0,
-    "months_of_runway": 2.3,
+    "missed_to_date": 0.0,
+    "earned_to_date": 4200.0,
+    "paycheck": { "amount": 2100.0, "every_days": 14, "monthly": 4550.0,
+                  "employer": "Northwind Logistics" },
+    "net_monthly": 1781.0,
+    "months_of_runway": null,
     "overdrawn": false,
     "upcoming": [
-      { "label": "Rent", "payee": "Sunrise Apartments",
-        "due_date": "2023-03-01", "amount": 1450.0, "days_away": 14 }
+      { "kind": "salary", "label": "Paycheck", "payee": "Northwind Logistics",
+        "due_date": "2023-02-24", "amount": 2100.0, "days_away": 7 },
+      { "kind": "bill", "label": "Rent", "payee": "Sunrise Apartments",
+        "due_date": "2023-03-01", "amount": 1450.0, "days_away": 12 }
     ],
     "charged": [
-      { "label": "Utilities", "payee": "City Power & Light",
-        "due_date": "2023-01-05", "amount": 180.0, "cash_after": 9820.0 }
+      { "kind": "bill", "label": "Utilities", "payee": "City Power & Light",
+        "due_date": "2023-01-05", "amount": 180.0, "shortfall": 0.0,
+        "cash_after": 9820.0, "sold": [] }
     ]
+  },
+  "bank": {
+    "source": "Nessie (local mock)",
+    "customer": { "id": "mock-customer-001", "name": "Demo Trader",
+                  "city": "Houston", "state": "TX" },
+    "account": { "id": "mock-account-001", "nickname": "Trading Cash", "type": "Checking",
+                 "number": "••••0001", "balance": 10000.0 },
+    "employer": "Northwind Logistics"
   }
 }
 ```
 
-- `total_return_pct` is the account: trading result **minus** bills. It is the number that
-  decides whether the player went broke.
-- `trading_return_pct` adds the bills back, so good stock picking still reads as good stock
-  picking. Showing both is the point — a run can be `+30%` at trading and `-61%` overdrawn.
-- `months_of_runway` is cash divided by the monthly bill total; negative means overdrawn.
+- `total_return_pct` is the account: trading result **minus** bills **plus** paychecks. It is
+  the number that decides whether the player went broke.
+- `trading_return_pct` takes bills and paychecks back out, so good stock picking still reads
+  as good stock picking and a salary never passes for it.
+- `months_of_runway` is cash divided by what the bills cost once the paycheck is netted off;
+  `null` when the paycheck covers the bills or there are none.
+- `paid_to_date` is what actually left the account for bills, `missed_to_date` what they still
+  owed after every share was sold, and `earned_to_date` the paychecks.
+- `bank` is the Nessie customer behind the session, looked up once per session.
+- A trade in `trades` carries `"forced": true` when the bank sold it to cover a bill.
 
-`POST /api/session/<id>/advance` additionally returns **`charged`** — the bills taken on this
-tick, each with the cash left after it:
+`POST /api/session/<id>/advance` additionally returns **`charged`** — the bills taken and
+paychecks paid on this tick, each with the cash left after it and any shares the bank sold:
 
 ```json
-{ "charged": [ { "label": "Rent", "due_date": "2023-02-01",
-                 "amount": 1450.0, "cash_after": -80.32 } ] }
+{ "charged": [
+    { "kind": "bill", "label": "Rent", "due_date": "2023-02-01", "amount": 1450.0,
+      "shortfall": 0.0, "cash_after": 211.4,
+      "sold": [ { "ticker": "AAPL", "shares": 12.0, "price": 143.97, "date": "2023-01-31" } ] },
+    { "kind": "salary", "label": "Paycheck", "payee": "Northwind Logistics",
+      "due_date": "2023-02-03", "amount": 2100.0, "shortfall": 0.0,
+      "cash_after": 2311.4, "sold": [] }
+] }
 ```
 
 Charges are idempotent: `session_expenses` is unique on `(session_id, bill_id, due_date)`, so
 re-advancing over a day that already paid rent never pays it twice.
+
+### Cash never goes below zero
+
+Bills and paychecks are settled in date order in one transaction that row-locks the session
+and its holdings (`database.settle_cash_flows`), before the new `sim_date` is saved. A
+paycheck lands before a bill due the same day. When a bill is due and the cash cannot cover
+it, the bank sells whole shares from the largest position down, at the last close on or
+before the due date, until the bill is covered; those sells go into `transactions` with
+`forced = true`. If the shares run out first, the bill takes the remaining cash, `cash_after`
+is `0`, and the rest is stored as `shortfall`.
+
+### Paychecks
+
+`game_sessions.salary_amount` is paid every other Friday, starting with the first Friday
+after the session's `start_date`, as a `kind = "salary"` row on the same ledger as the bills.
+The start page fills it in from the customer's latest Nessie deposit whose description
+contains `Payroll` (the text after the dash is the employer). The mock fixture has one per
+customer, and `seed_nessie` creates one in a live sandbox.
+
+### `GET /api/bank/profiles`
+
+The Nessie customers a run can start as, default customer first and at most six, used by the
+start page's **Your bank** picker. Cached for five minutes.
+
+```json
+{
+  "source": "Nessie (local mock)",
+  "default_customer_id": "mock-customer-001",
+  "pay_interval_days": 14,
+  "profiles": [
+    {
+      "id": "mock-customer-001", "name": "Demo Trader", "city": "Houston", "state": "TX",
+      "account": { "id": "mock-account-001", "nickname": "Trading Cash", "type": "Checking",
+                   "number": "••••0001", "balance": 10000.0 },
+      "bills": { "count": 8, "monthly_total": 2769.0 },
+      "paycheck": { "amount": 2100.0, "employer": "Northwind Logistics" }
+    }
+  ]
+}
+```
+
+Returns `503` with `{"error": "Nessie is unavailable: ..."}` when the bank cannot be reached.
 
 ## Teacher mode and the walkthrough
 
@@ -641,5 +717,5 @@ card in a waiting state, and polls `GET /state` until the matching `PATTERN_LESS
 Gemini is unreachable the lesson still arrives from the built-in syllabus
 ([`patterns.py`](../src/scripts/game/patterns.py)) with `source: "offline"`.
 
-The walkthrough is a nine-step tour over the real panels, shown automatically on a first
+The walkthrough is an eleven-step tour over the real panels, shown automatically on a first
 visit and re-openable from **How this works** in the header.

@@ -166,5 +166,37 @@
       "account_id": "mock-account-003"
     }
   ],
+  "deposits": [
+    {
+      "_id": "mock-deposit-001",
+      "type": "deposit",
+      "transaction_date": "2024-01-05",
+      "status": "completed",
+      "medium": "balance",
+      "amount": 2100.0,
+      "description": "Payroll - Northwind Logistics",
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-deposit-002",
+      "type": "deposit",
+      "transaction_date": "2024-01-19",
+      "status": "completed",
+      "medium": "balance",
+      "amount": 2100.0,
+      "description": "Payroll - Northwind Logistics",
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-deposit-101",
+      "type": "deposit",
+      "transaction_date": "2024-01-12",
+      "status": "completed",
+      "medium": "balance",
+      "amount": 450.0,
+      "description": "Payroll - Campus Bookstore",
+      "account_id": "mock-account-003"
+    }
+  ],
   "purchases": []
 }

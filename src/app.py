@@ -10,6 +10,7 @@ from flask.json.provider import DefaultJSONProvider
 
 import config
 from routes.game_routes import api
+from scripts.api import nessie
 from scripts.database import database
 from scripts.game.engine import GameError
 
@@ -107,7 +108,7 @@ def home():
         universe=catalog,
         stats=stats,
         max_watchlist=config.MAX_WATCHLIST,
-        funding_source=config.NESSIE_DEFAULT_CUSTOMER_ID,
+        funding_source=nessie.source_label(),
     )
 
 

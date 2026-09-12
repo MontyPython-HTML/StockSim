@@ -313,6 +313,27 @@
                     </div>
                 </div>
 
+                <div id="bank-panel" class="rounded-3xl border border-line bg-surface p-6">
+                    <div class="mb-3 flex items-center justify-between gap-3">
+                        <h2 class="text-lg font-semibold">Your bank</h2>
+                        <span id="bank-source"
+                            class="rounded-full border border-line px-3 py-1 text-xs text-muted">Nessie</span>
+                    </div>
+                    <p id="bank-holder" class="text-2xl font-bold">&mdash;</p>
+                    <p id="bank-account" class="mt-1 text-sm text-dim"></p>
+                    <dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
+                        <div>
+                            <dt class="text-xs uppercase tracking-wide text-dim">Started with</dt>
+                            <dd id="bank-start" class="tabular-nums">&mdash;</dd>
+                        </div>
+                        <div>
+                            <dt class="text-xs uppercase tracking-wide text-dim">Paycheck</dt>
+                            <dd id="bank-paycheck" class="tabular-nums">&mdash;</dd>
+                        </div>
+                    </dl>
+                    <p id="bank-note" class="mt-4 border-t border-line pt-4 text-xs leading-relaxed text-dim"></p>
+                </div>
+
                 <!-- The bank side of the account. Trading is not the only thing taking
                      money out, and this is where that becomes obvious. -->
                 <div id="bills-panel" class="rounded-3xl border border-line bg-surface p-6">

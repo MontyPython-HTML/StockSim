@@ -23,6 +23,7 @@ const money = (value) => value == null ? '—' : `$${Number(value).toLocaleStrin
 const signed = (value, digits = 2) => value == null ? '—' : `${value >= 0 ? '+' : ''}${Number(value).toFixed(digits)}`;
 const pct = (value) => value == null ? '—' : `${signed(value)}%`;
 const toneFor = (value) => value == null ? 'text-muted' : value > 0 ? 'text-up' : value < 0 ? 'text-down' : 'text-muted';
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // The Play button is the one control that changes colour while running, so both of its
 // states live here rather than being assembled out of string surgery in play()/pause().
@@ -184,7 +185,7 @@ function renderBills(state) {
     // Months of runway is the number that should change how much gets invested, so it is
     // coloured like a warning long before the balance actually goes red.
     const months = bills.months_of_runway;
-    runway.textContent = months == null ? 'no bills'
+    runway.textContent = months == null ? (bills.paycheck && bills.bill_count ? 'paycheck covers bills' : 'no bills')
         : months < 0 ? 'overdrawn'
             : `${months} months of runway`;
     runway.className = 'rounded-full border px-3 py-1 text-xs ' + (
@@ -202,20 +203,51 @@ function renderBills(state) {
     if (!upcoming.length) {
         list.innerHTML = '<p class="text-xs text-dim">No standing orders on this account.</p>';
     } else {
-        list.innerHTML = upcoming.map((bill) => `
+        list.innerHTML = upcoming.map((item) => {
+            const income = item.kind === 'salary';
+            const tone = income ? 'text-up' : item.days_away <= 7 ? 'text-warn' : 'text-muted';
+            return `
             <div class="flex items-baseline justify-between gap-3 rounded-xl border border-line bg-ink-soft px-3 py-2">
                 <span>
-                    <span class="block font-medium">${bill.label}</span>
-                    <span class="block text-xs text-dim">${bill.due_date}${bill.days_away <= 7 ? ` · in ${bill.days_away} days` : ''}</span>
+                    <span class="block font-medium">${esc(item.label)}</span>
+                    <span class="block text-xs text-dim">${item.due_date}${item.days_away <= 7 ? ` · in ${item.days_away} days` : ''}</span>
                 </span>
-                <span class="shrink-0 tabular-nums ${bill.days_away <= 7 ? 'text-warn' : 'text-muted'}">${money(bill.amount)}</span>
-            </div>`).join('');
+                <span class="shrink-0 tabular-nums ${tone}">${income ? '+' : ''}${money(item.amount)}</span>
+            </div>`;
+        }).join('');
     }
 
-    el('bills-paid').textContent = bills.paid_to_date
-        ? `${money(bills.paid_to_date)} paid so far this run. Your trading is ${signed(state.portfolio.trading_return_pct)}% `
-          + `before bills, ${signed(state.portfolio.total_return_pct)}% after.`
+    const totals = [];
+    if (bills.paid_to_date) totals.push(`${money(bills.paid_to_date)} paid in bills`);
+    if (bills.earned_to_date) totals.push(`${money(bills.earned_to_date)} earned`);
+    if (bills.missed_to_date) totals.push(`${money(bills.missed_to_date)} missed`);
+    el('bills-paid').textContent = totals.length
+        ? `${totals.join(' · ')} so far this run. Your trading is ${signed(state.portfolio.trading_return_pct)}% `
+          + `on its own, ${signed(state.portfolio.total_return_pct)}% after bills and pay.`
         : '';
+}
+
+function renderBank(state) {
+    const bank = state.bank;
+    if (!bank) return;
+    const customer = bank.customer;
+    const account = bank.account;
+    const bills = state.expenses || {};
+    const paycheck = bills.paycheck;
+
+    el('bank-source').textContent = bank.source;
+    el('bank-holder').textContent = customer?.name || 'Bank customer';
+    el('bank-account').textContent = [
+        account && [account.nickname, account.type, account.number].filter(Boolean).join(' · '),
+        customer?.city && `${customer.city}, ${customer.state}`,
+    ].filter(Boolean).join(' · ');
+    el('bank-start').textContent = money(state.portfolio.starting_cash);
+    el('bank-paycheck').textContent = paycheck ? `${money(paycheck.amount)} / 2 weeks` : 'None';
+    el('bank-note').textContent = (bills.bill_count
+        ? `${bills.bill_count} bills take ${money(bills.monthly_total)} a month out of this account`
+        : 'No bills come out of this account')
+        + (paycheck ? `, and your paycheck brings in about ${money(paycheck.monthly)}.` : '.')
+        + ' If your cash cannot cover a bill, the bank sells your shares to pay it.';
 }
 
 function renderBasketNote(payload) {
@@ -268,6 +300,7 @@ function render(state) {
     renderTradePanel(state);
     renderHoldings(state);
     renderBills(state);
+    renderBank(state);
     updateCharts(charts, state);
     renderFeed(state.ai_feed);
     renderPatterns(state.patterns);
@@ -469,13 +502,28 @@ function logSignals(signals) {
 // discover later by noticing the cash number is smaller.
 function logCharges(charges) {
     for (const charge of charges) {
-        const broke = charge.cash_after < 0;
+        if (charge.kind === 'salary') {
+            toast(
+                `Paycheck · +${money(charge.amount)}`,
+                `Paid in on ${charge.due_date}${charge.payee ? ` by ${esc(charge.payee)}` : ''}. ${money(charge.cash_after)} in cash.`,
+                'bullish',
+            );
+            continue;
+        }
+        for (const sale of charge.sold || []) {
+            toast(
+                `Bank sold ${sale.shares} ${sale.ticker}`,
+                `At ${money(sale.price)} on ${sale.date}, to cover ${esc(charge.label)}. You did not have the cash when it came due.`,
+                'bearish',
+            );
+        }
+        const missed = charge.shortfall > 0;
         toast(
-            `${charge.label} · ${money(charge.amount)}`,
-            broke
-                ? `Paid on ${charge.due_date}. Your cash is now ${money(charge.cash_after)} - you are overdrawn.`
+            `${esc(charge.label)} · ${money(charge.amount + charge.shortfall)}`,
+            missed
+                ? `Due on ${charge.due_date}. Only ${money(charge.amount)} could be paid, even after selling everything - ${money(charge.shortfall)} missed.`
                 : `Paid on ${charge.due_date}. ${money(charge.cash_after)} left in cash.`,
-            broke ? 'bearish' : 'neutral',
+            missed ? 'bearish' : 'neutral',
         );
     }
 }
@@ -873,6 +921,34 @@ const TOUR_STEPS = [
             + 'things and watch what happens.',
     },
     {
+        target: 'bank-panel',
+        title: 'This is your bank account',
+        body: (state) => {
+            const name = state?.bank?.customer?.name;
+            const account = state?.bank?.account;
+            const paycheck = state?.expenses?.paycheck;
+            return `${name ? `You are ${name}, a customer at the Nessie sandbox bank.` : 'This is your Nessie bank account.'} `
+                + `Your starting cash is the ${money(state?.portfolio?.starting_cash)} in your `
+                + `${account?.nickname || 'checking'} account`
+                + (paycheck
+                    ? `, and a ${money(paycheck.amount)} paycheck${paycheck.employer ? ` from ${paycheck.employer}` : ''} lands every two weeks.`
+                    : '. No paycheck is coming in, so every bill eats into it.');
+        },
+    },
+    {
+        target: 'bills-panel',
+        title: 'You have to pay these bills',
+        body: (state) => {
+            const bills = state?.expenses;
+            const lead = bills?.bill_count
+                ? `${bills.bill_count} bills - ${money(bills.monthly_total)} a month - come out of your cash on their due dates, `
+                    + 'whether or not your money is sitting in stocks.'
+                : 'Any bills on this account come out of your cash on their due dates.';
+            return `${lead} If you do not have the cash when one is due, the bank sells your shares at that `
+                + "day's price to pay it. Keep enough cash on hand that you decide when to sell, not the bank.";
+        },
+    },
+    {
         target: 'watchlist',
         title: 'The stocks you picked',
         body: 'Each tile is one company you are following, with its latest price and how much it '
@@ -1000,7 +1076,7 @@ function showTourStep(index) {
 
     el('tour-step').textContent = `Step ${index + 1} of ${TOUR_STEPS.length}`;
     el('tour-title').textContent = step.title;
-    el('tour-body').textContent = step.body;
+    el('tour-body').textContent = typeof step.body === 'function' ? step.body(latestState) : step.body;
     el('tour-back').classList.toggle('invisible', index === 0);
     el('tour-next').textContent = index === TOUR_STEPS.length - 1 ? 'Start trading' : 'Next';
 
@@ -1061,7 +1137,7 @@ for (const chip of document.querySelectorAll('.qty-chip')) {
             const ticker = el('trade-ticker').value;
             const quote = latestState?.quotes?.find((row) => row.ticker === ticker);
             el('share-qty').value = quote?.close
-                ? Math.floor(latestState.portfolio.cash_balance / quote.close) : 0;
+                ? Math.max(0, Math.floor(latestState.portfolio.cash_balance / quote.close)) : 0;
         } else {
             el('share-qty').value = chip.dataset.qty;
         }

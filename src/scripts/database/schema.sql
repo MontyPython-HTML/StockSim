@@ -211,3 +211,17 @@ CREATE TABLE IF NOT EXISTS session_expenses (
 
 CREATE INDEX IF NOT EXISTS idx_session_expenses_session
     ON session_expenses (session_id, due_date);
+
+-- Paychecks share the bills' ledger so the running balance stays in date order. `amount` is
+-- what actually moved; `shortfall` is what a bill still owed after selling everything.
+ALTER TABLE session_expenses ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'bill';
+ALTER TABLE session_expenses ADD COLUMN IF NOT EXISTS shortfall NUMERIC(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE session_expenses DROP CONSTRAINT IF EXISTS session_expenses_kind_check;
+ALTER TABLE session_expenses ADD CONSTRAINT session_expenses_kind_check
+    CHECK (kind IN ('bill', 'salary'));
+
+-- The paycheck chosen on the start page, paid every two weeks; 0 means no salary.
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS salary_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
+
+-- Shares the bank sold to cover a bill the cash could not.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS forced BOOLEAN NOT NULL DEFAULT FALSE;

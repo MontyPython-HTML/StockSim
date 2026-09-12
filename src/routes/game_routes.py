@@ -1,13 +1,15 @@
+import math
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from uuid import UUID
 
 from flask import Blueprint, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 import config
-from scripts.api import gemini_mcp_client
+from scripts.api import gemini_mcp_client, nessie
 from scripts.database import database
-from scripts.game import engine, events, performance, price_source
+from scripts.game import engine, events, expenses, performance, price_source
 from scripts.game.engine import AIUnavailable, GameError
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -163,9 +165,29 @@ def ai_status():
 # --- sessions -------------------------------------------------------------
 
 
+@api.get("/bank/profiles")
+def bank_profiles():
+    """Nessie customers a run can start as: balance, bills and paycheck for each."""
+    try:
+        profiles = expenses.bank_profiles()
+    except Exception as exc:  # noqa: BLE001 - the start page shows the reason instead of a 500
+        return jsonify({"error": f"Nessie is unavailable: {exc}", "profiles": []}), 503
+    return jsonify(
+        {
+            "source": nessie.source_label(),
+            "default_customer_id": config.NESSIE_DEFAULT_CUSTOMER_ID,
+            "pay_interval_days": expenses.PAY_INTERVAL_DAYS,
+            "profiles": profiles,
+        }
+    )
+
+
 @api.post("/session/start")
 def start_session():
     body = request.get_json(silent=True) or {}
+    salary = _optional_float(body.get("salary_amount"), "salary_amount")
+    if salary is not None and not math.isfinite(salary):
+        raise GameError("salary_amount must be a number")
     state = engine.start_session(
         tickers=body.get("tickers"),
         start_date=_parse_date(body.get("start_date"), "start_date"),
@@ -176,6 +198,7 @@ def start_session():
         drift=_optional_float(body.get("drift"), "drift"),
         volatility=_optional_float(body.get("volatility"), "volatility"),
         seed=_optional_int(body.get("seed"), "seed"),
+        salary_amount=None if salary is None else Decimal(str(salary)).quantize(Decimal("0.01")),
     )
     return jsonify(state), 201
 

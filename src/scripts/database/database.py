@@ -156,6 +156,7 @@ def create_session(
     nessie_customer_id: str | None,
     nessie_account_id: str | None,
     user_label: str = "anonymous",
+    salary_amount: Decimal = Decimal("0"),
 ) -> dict:
     """Create the session row. The watchlist is written separately, by set_session_tickers."""
     with get_cursor() as cur:
@@ -163,9 +164,9 @@ def create_session(
             """
             INSERT INTO game_sessions (
                 id, user_label, start_date, end_date, sim_date,
-                starting_cash, cash_balance, nessie_customer_id, nessie_account_id
+                starting_cash, cash_balance, nessie_customer_id, nessie_account_id, salary_amount
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -178,6 +179,7 @@ def create_session(
                 starting_cash,
                 nessie_customer_id,
                 nessie_account_id,
+                salary_amount,
             ),
         )
         return cur.fetchone()
@@ -330,7 +332,7 @@ def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
                     WHERE session_id = %(sid)s AND shares > 0 ORDER BY ticker
                 ) h) AS holdings,
                 (SELECT coalesce(json_agg(t), '[]'::json) FROM (
-                    SELECT id, ticker, trade_date, side, shares, price, cash_after
+                    SELECT id, ticker, trade_date, side, shares, price, cash_after, forced
                     FROM transactions WHERE session_id = %(sid)s ORDER BY trade_date, id
                 ) t) AS trades,
                 (SELECT coalesce(json_agg(e), '[]'::json) FROM (
@@ -339,7 +341,7 @@ def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
                     ORDER BY created_at DESC, id DESC LIMIT %(limit)s
                 ) e) AS events,
                 (SELECT coalesce(json_agg(x), '[]'::json) FROM (
-                    SELECT id, bill_id, label, payee, due_date, amount, cash_after
+                    SELECT id, bill_id, kind, label, payee, due_date, amount, shortfall, cash_after
                     FROM session_expenses WHERE session_id = %(sid)s ORDER BY due_date, id
                 ) x) AS expenses
             """,
@@ -351,46 +353,117 @@ def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
 # --- standing orders ------------------------------------------------------
 
 
-def charge_expenses(session_id: str, charges: list[dict], new_cash: Decimal) -> list[dict]:
-    """Write the bills that came due and the cash left after them, in one transaction.
+def settle_cash_flows(session_id: str, flows: list[dict], prices_on, plan_sales) -> tuple[list[dict], Decimal]:
+    """Pay bills and bank paychecks in date order, in one transaction, never below zero cash.
 
-    ON CONFLICT DO NOTHING against (session_id, bill_id, due_date) is what makes this safe
-    to call from a tick that overlaps one already applied: the same rent is never taken
-    twice, however the clock got there.
+    The session and its holdings are row-locked, so a concurrent tick cannot settle the same
+    day twice and (session_id, bill_id, due_date) rows already on the ledger are skipped. A
+    bill the cash cannot cover sells shares first - `plan_sales(holdings, prices, needed)`
+    picks them and `prices_on(day)` prices them - and whatever is still owed after that is
+    stored as the bill's shortfall.
     """
-    if not charges:
-        return []
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            applied = []
-            for charge in charges:
+    cent = Decimal("0.01")
+    with get_transaction() as cur:
+        cur.execute("SELECT cash_balance FROM game_sessions WHERE id = %s FOR UPDATE", (session_id,))
+        row = cur.fetchone()
+        if row is None:
+            return [], Decimal("0")
+        cash = row["cash_balance"]
+
+        cur.execute(
+            "SELECT ticker, shares FROM portfolio_holdings "
+            "WHERE session_id = %s AND shares > 0 FOR UPDATE",
+            (session_id,),
+        )
+        holdings = {held["ticker"]: held["shares"] for held in cur.fetchall()}
+
+        cur.execute(
+            "SELECT bill_id, due_date FROM session_expenses "
+            "WHERE session_id = %s AND due_date = ANY(%s::date[])",
+            (session_id, sorted({flow["due_date"] for flow in flows})),
+        )
+        settled = {(done["bill_id"], done["due_date"]) for done in cur.fetchall()}
+
+        applied: list[dict] = []
+        sold_tickers: set[str] = set()
+        for flow in flows:
+            if (flow["bill_id"], flow["due_date"]) in settled:
+                continue
+            amount = Decimal(str(flow["amount"])).quantize(cent)
+            sold: list[dict] = []
+
+            if flow["kind"] == "salary":
+                cash += amount
+                paid = amount
+            else:
+                if cash < amount and holdings:
+                    quotes = prices_on(flow["due_date"])
+                    prices = {ticker: quote["price"] for ticker, quote in quotes.items()}
+                    for ticker, shares in plan_sales(holdings, prices, amount - cash):
+                        price = prices[ticker]
+                        cash += (shares * price).quantize(cent)
+                        holdings[ticker] -= shares
+                        if holdings[ticker] <= 0:
+                            del holdings[ticker]
+                        sold_tickers.add(ticker)
+                        cur.execute(
+                            """
+                            INSERT INTO transactions
+                                (session_id, ticker, trade_date, side, shares, price, cash_after, forced)
+                            VALUES (%s, %s, %s, 'SELL', %s, %s, %s, TRUE)
+                            """,
+                            (session_id, ticker, quotes[ticker]["date"], shares, price, cash),
+                        )
+                        sold.append(
+                            {
+                                "ticker": ticker,
+                                "shares": float(shares),
+                                "price": float(price),
+                                "date": quotes[ticker]["date"].isoformat(),
+                            }
+                        )
+                paid = max(Decimal("0"), min(amount, cash))
+                cash -= paid
+
+            cur.execute(
+                """
+                INSERT INTO session_expenses
+                    (session_id, bill_id, kind, label, payee, due_date, amount, shortfall, cash_after)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, bill_id, kind, label, payee, due_date, amount, shortfall, cash_after
+                """,
+                (
+                    session_id,
+                    flow["bill_id"],
+                    flow["kind"],
+                    flow["label"],
+                    flow.get("payee"),
+                    flow["due_date"],
+                    paid,
+                    amount - paid,
+                    cash,
+                ),
+            )
+            applied.append({**cur.fetchone(), "sold": sold})
+
+        for ticker in sold_tickers:
+            if ticker in holdings:
                 cur.execute(
-                    """
-                    INSERT INTO session_expenses
-                        (session_id, bill_id, label, payee, due_date, amount, cash_after)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (session_id, bill_id, due_date) DO NOTHING
-                    RETURNING id, bill_id, label, payee, due_date, amount, cash_after
-                    """,
-                    (
-                        session_id,
-                        charge["bill_id"],
-                        charge["label"],
-                        charge.get("payee"),
-                        charge["due_date"],
-                        charge["amount"],
-                        charge["cash_after"],
-                    ),
+                    "UPDATE portfolio_holdings SET shares = %s, updated_at = now() "
+                    "WHERE session_id = %s AND ticker = %s",
+                    (holdings[ticker], session_id, ticker),
                 )
-                row = cur.fetchone()
-                if row:
-                    applied.append(row)
-            if applied:
+            else:
                 cur.execute(
-                    "UPDATE game_sessions SET cash_balance = %s, updated_at = now() WHERE id = %s",
-                    (new_cash, session_id),
+                    "DELETE FROM portfolio_holdings WHERE session_id = %s AND ticker = %s",
+                    (session_id, ticker),
                 )
-            return applied
+        if applied:
+            cur.execute(
+                "UPDATE game_sessions SET cash_balance = %s, updated_at = now() WHERE id = %s",
+                (cash, session_id),
+            )
+        return applied, cash
 
 
 def list_expenses(session_id: str) -> list[dict]:

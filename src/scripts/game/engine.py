@@ -89,7 +89,11 @@ def normalise_tickers(raw) -> list[str]:
 
 
 def _portfolio(
-    session: dict, holdings: list[dict], closes: dict[str, float], bills_paid: float = 0.0
+    session: dict,
+    holdings: list[dict],
+    closes: dict[str, float],
+    bills_paid: float = 0.0,
+    salary_earned: float = 0.0,
 ) -> dict:
     """Value every position at its own last close, not the focused chart's price."""
     positions = []
@@ -120,11 +124,12 @@ def _portfolio(
         "net_worth": net_worth,
         "starting_cash": starting_cash,
         "total_return_pct": (net_worth - starting_cash) / starting_cash * 100,
-        # Rent is not a trading loss. The account number is the one that decides whether
-        # the player went broke; this one is the only fair read on their decisions, and
-        # showing both is what makes the difference between them teachable.
+        # Rent is not a trading loss and a paycheck is not a trading gain. The account number
+        # decides whether the player went broke; this one is the only fair read on their
+        # decisions, and showing both is what makes the difference teachable.
         "bills_paid": bills_paid,
-        "trading_return_pct": (net_worth + bills_paid - starting_cash) / starting_cash * 100,
+        "salary_earned": salary_earned,
+        "trading_return_pct": (net_worth + bills_paid - salary_earned - starting_cash) / starting_cash * 100,
         "overdrawn": cash < 0,
     }
 
@@ -163,8 +168,9 @@ def _state_from_bundle(
 
     focus_source = price_source.for_session(session, focus)
     history = focus_source.history_through(sim_date)
-    paid_rows = bundle.get("expenses") or []
-    bills_paid = float(sum(float(row["amount"]) for row in paid_rows))
+    ledger = bundle.get("expenses") or []
+    bills_paid = sum(float(row["amount"]) for row in ledger if (row.get("kind") or "bill") == "bill")
+    salary_earned = sum(float(row["amount"]) for row in ledger if row.get("kind") == "salary")
 
     return {
         "session_id": session_id,
@@ -186,7 +192,7 @@ def _state_from_bundle(
             }
             for ticker in watchlist
         ],
-        "portfolio": _portfolio(session, bundle["holdings"], closes, bills_paid),
+        "portfolio": _portfolio(session, bundle["holdings"], closes, bills_paid, salary_earned),
         "chart": indicators.to_series(history.tail(window_days)),
         "trades": [
             {
@@ -195,6 +201,7 @@ def _state_from_bundle(
                 "side": t["side"],
                 "shares": float(t["shares"]),
                 "price": float(t["price"]),
+                "forced": bool(t.get("forced")),
             }
             for t in bundle["trades"]
         ],
@@ -211,20 +218,12 @@ def _state_from_bundle(
         # The syllabus with what this session has covered, so the screen can show which
         # patterns the player has actually been taught and which are still ahead of them.
         "patterns": patterns.progress(bundle["events"]),
-        # Real-life money: what the bank has already taken, and what is about to be taken.
+        # Real-life money: what the bank has taken and paid in, and what is coming next.
         "expenses": {
-            **expenses.summary(session, sim_date, bundle.get("expenses") or []),
-            "charged": [
-                {
-                    "label": row["label"],
-                    "payee": row.get("payee"),
-                    "due_date": _as_date(row["due_date"]).isoformat(),
-                    "amount": float(row["amount"]),
-                    "cash_after": float(row["cash_after"]),
-                }
-                for row in (bundle.get("expenses") or [])
-            ],
+            **expenses.summary(session, sim_date, ledger),
+            "charged": [expenses.ledger_row(row) for row in ledger],
         },
+        "bank": {"source": nessie.source_label(), **expenses.bank_for(session)},
     }
 
 
@@ -283,6 +282,7 @@ def start_session(
     drift: float | None = None,
     volatility: float | None = None,
     seed: int | None = None,
+    salary_amount: Decimal | None = None,
 ) -> dict:
     """Start a run over a watchlist.
 
@@ -299,7 +299,11 @@ def start_session(
     first_day, session_end = _window_for(watchlist, start_date, end_date)
 
     customer_id = nessie_customer_id or config.NESSIE_DEFAULT_CUSTOMER_ID
-    starting_cash, account = nessie.get_starting_funds(customer_id)
+    try:
+        starting_cash, account = nessie.get_starting_funds(customer_id)
+    except ValueError as exc:
+        raise GameError(str(exc))
+    salary = expenses.default_paycheck(account["_id"]) if salary_amount is None else salary_amount
 
     session = database.create_session(
         session_id=str(uuid.uuid4()),
@@ -309,6 +313,7 @@ def start_session(
         starting_cash=starting_cash,
         nessie_customer_id=customer_id,
         nessie_account_id=account["_id"],
+        salary_amount=salary,
     )
     session_id = str(session["id"])
     database.set_session_tickers(session_id, watchlist)
@@ -335,6 +340,7 @@ def start_session(
         "account_nickname": account.get("nickname"),
         "account_type": account.get("type"),
         "balance": float(starting_cash),
+        "paycheck": float(salary),
     }
     return state
 
@@ -607,16 +613,15 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
     if len(signals) > MAX_SIGNALS_PER_TICK:
         signals = signals[-MAX_SIGNALS_PER_TICK:]
 
+    # Bills and paychecks for the days just crossed, settled before the clock is saved: if
+    # this fails the date stays put, and the retry re-walks days the ledger already holds.
+    charged = expenses.apply_due(session, _as_date(session["sim_date"]), sim_date, watchlist)
+
     database.update_session(
         session_id,
         sim_date=sim_date,
         **({"status": "finished"} if finished else {}),
     )
-
-    # Standing orders come out of the same cash the player trades with, so they are
-    # charged for the days the clock just crossed - after the walk, before the state the
-    # response is built from.
-    charged = expenses.apply_due(session, _as_date(session["sim_date"]), sim_date)
 
     pending = (
         _maybe_schedule_ai(
@@ -629,8 +634,11 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
     session["sim_date"] = sim_date
     if finished:
         session["status"] = "finished"
-    # The walk charged bills against this session dict, so the bundle's expense list is
-    # one tick stale; the rows just written are the ones the player has not seen.
+    # The bundle is one tick stale: the ledger rows just written are the ones the player has
+    # not seen, and a forced sale also moved holdings and the trade log.
+    if any(row["sold"] for row in charged):
+        fresh = database.load_session_bundle(session_id)
+        bundle["holdings"], bundle["trades"] = fresh["holdings"], fresh["trades"]
     bundle["expenses"] = list(bundle.get("expenses") or []) + charged
     state = _state_from_bundle(bundle, focus)
     state["signals"] = signals

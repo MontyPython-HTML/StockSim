@@ -32,6 +32,13 @@ def get_customers() -> list[dict]:
     return _get("/customers")
 
 
+def get_customer(customer_id: str) -> dict | None:
+    if config.NESSIE_USE_MOCK:
+        return next((c for c in _fixture()["customers"] if c["_id"] == customer_id), None)
+    found = _get(f"/customers/{customer_id}")
+    return found[0] if found else None
+
+
 def get_customer_accounts(customer_id: str) -> list[dict]:
     if config.NESSIE_USE_MOCK:
         return [a for a in _fixture()["accounts"] if a["customer_id"] == customer_id]
@@ -55,6 +62,13 @@ def get_account_purchases(account_id: str) -> list[dict]:
     if config.NESSIE_USE_MOCK:
         return [p for p in _fixture().get("purchases", []) if p["account_id"] == account_id]
     return _get(f"/accounts/{account_id}/purchases")
+
+
+def get_account_deposits(account_id: str) -> list[dict]:
+    """Money paid in. A "Payroll - <employer>" deposit is what the game reads as a paycheck."""
+    if config.NESSIE_USE_MOCK:
+        return [d for d in _fixture().get("deposits", []) if d["account_id"] == account_id]
+    return _get(f"/accounts/{account_id}/deposits")
 
 
 def pick_funding_account(customer_id: str) -> dict:

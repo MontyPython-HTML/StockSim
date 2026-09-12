@@ -113,7 +113,10 @@ def equity_curve(
     # weekend, so they are drained in date order onto the first plotted day at or after
     # them instead.
     charges = sorted(
-        ((_iso(charge["due_date"]), float(charge["amount"])) for charge in expenses or []),
+        (
+            (_iso(row["due_date"]), float(row["amount"]) * (1 if row.get("kind") == "salary" else -1))
+            for row in expenses or []
+        ),
         key=lambda row: row[0],
     )
     charge_index = 0
@@ -121,7 +124,7 @@ def equity_curve(
     def drain_charges(through: str) -> None:
         nonlocal cash, charge_index
         while charge_index < len(charges) and charges[charge_index][0] <= through:
-            cash -= charges[charge_index][1]
+            cash += charges[charge_index][1]
             charge_index += 1
 
     def settle(day: str) -> None:
