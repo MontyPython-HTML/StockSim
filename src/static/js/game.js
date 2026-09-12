@@ -458,36 +458,10 @@ function logSignals(signals) {
             </div>
             <p class="text-xs text-muted mt-1 leading-relaxed">${signal.message}</p>`;
         log.prepend(node);
-        toast(`${signal.ticker} · ${signal.name}`, signal.message, signal.direction);
     }
     signalTotal += signals.length;
     if (!signalsOpen) signalUnread += signals.length;
     updateSignalsBadge();
-}
-
-// A bill leaving the account is an event the player should feel, not something they
-// discover later by noticing the cash number is smaller.
-function logCharges(charges) {
-    for (const charge of charges) {
-        const broke = charge.cash_after < 0;
-        toast(
-            `${charge.label} · ${money(charge.amount)}`,
-            broke
-                ? `Paid on ${charge.due_date}. Your cash is now ${money(charge.cash_after)} - you are overdrawn.`
-                : `Paid on ${charge.due_date}. ${money(charge.cash_after)} left in cash.`,
-            broke ? 'bearish' : 'neutral',
-        );
-    }
-}
-
-function toast(title, message, direction) {
-    const tone = direction === 'bullish' ? 'border-up' :
-        direction === 'bearish' ? 'border-down' : 'border-line-strong';
-    const node = document.createElement('div');
-    node.className = `rounded-xl border border-line border-l-4 ${tone} bg-surface p-4 shadow-xl`;
-    node.innerHTML = `<div class="font-semibold mb-1">${title}</div><p class="text-sm text-muted leading-relaxed">${message}</p>`;
-    el('toasts').appendChild(node);
-    setTimeout(() => node.remove(), 9000);
 }
 
 function setStatus(text, active) {
@@ -605,7 +579,6 @@ async function advance(days = 1) {
         });
         render(state);
         logSignals(state.signals || []);
-        logCharges(state.charged || []);
         scheduleBasket();
         // The lesson itself is still being written on a worker thread. Teacher mode stops
         // the clock now, on the tick that queued it, so the player is not three days past
@@ -702,7 +675,6 @@ async function trade(side, ticker, explicitShares) {
             body: JSON.stringify({ ticker: target, side, shares, focus: focus || target }),
         }));
         scheduleBasket(0);
-        toast(`${side} ${shares} ${target}`, `Filled at the close on ${latestState.sim_date}.`, 'neutral');
     } catch (error) {
         errorBox.textContent = error.message;
         errorBox.classList.remove('hidden');
@@ -1174,12 +1146,6 @@ el('shock-form').addEventListener('submit', async (event) => {
         render(await call(`/api/session/${sessionId}/state?focus=${focus}`));
         await refreshSimulation();
         scheduleBasket(0);
-        const hit = shock.affected_tickers || [shock.ticker];
-        toast(
-            `${shock.scope === 'ticker' ? shock.ticker : `${hit.length} symbols`} · moved ${shock.bars_affected} sessions`,
-            shock.headline,
-            shock.sentiment > 0 ? 'bullish' : 'bearish',
-        );
     } catch (error) {
         errorBox.textContent = error.message;
         errorBox.classList.remove('hidden');
