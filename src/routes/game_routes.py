@@ -44,8 +44,6 @@ def _json_http_error(error: HTTPException):
     return jsonify({"error": error.description or error.name}), error.code
 
 
-# --- request parsing ------------------------------------------------------
-
 
 def _parse_date(value: str, field: str) -> date:
     try:
@@ -99,8 +97,6 @@ def _day_count(value) -> int:
     return days
 
 
-# --- errors ---------------------------------------------------------------
-
 
 @api.errorhandler(GameError)
 def handle_game_error(error: GameError):
@@ -109,8 +105,6 @@ def handle_game_error(error: GameError):
 
 @api.errorhandler(AIUnavailable)
 def handle_ai_error(error: AIUnavailable):
-    # 503 + the real reason: the button press that triggered this has a player watching,
-    # so a missing key or a dead MCP subprocess must say so out loud.
     return jsonify({"error": str(error)}), 503
 
 
@@ -128,8 +122,6 @@ def handle_database_busy(error: database.DatabaseBusy):
     return response
 
 
-# --- catalog --------------------------------------------------------------
-
 
 @api.get("/health")
 def health():
@@ -142,7 +134,7 @@ def health():
         return jsonify(database.health())
     except database.DatabaseBusy as error:
         return jsonify({"database": "busy", "error": str(error), **database.pool_status()}), 503
-    except Exception as error:  # noqa: BLE001 - the point of the endpoint is to report this
+    except Exception as error:  # noqa: BLE001
         return jsonify({"database": "unreachable", "error": str(error)}), 503
 
 
@@ -193,15 +185,13 @@ def ai_status():
     )
 
 
-# --- sessions -------------------------------------------------------------
-
 
 @api.get("/bank/profiles")
 def bank_profiles():
     """Nessie customers a run can start as: balance, bills and paycheck for each."""
     try:
         profiles = expenses.bank_profiles()
-    except Exception as exc:  # noqa: BLE001 - the start page shows the reason instead of a 500
+    except Exception as exc:  # noqa: BLE001
         return jsonify({"error": f"Nessie is unavailable: {exc}", "profiles": []}), 503
     return jsonify(
         {
@@ -320,7 +310,6 @@ def session_basket(session_id: str):
             session,
             bundle["trades"],
             _optional_int(request.args.get("window"), "window"),
-            # The watchlist is already in the bundle this request just loaded.
             bundle.get("watchlist"),
             bundle.get("expenses"),
         )
@@ -371,8 +360,6 @@ def predict(session_id: str):
     body = request.get_json(silent=True) or {}
     return jsonify({"prediction": engine.request_prediction(session_id, body.get("ticker"))})
 
-
-# --- simulated future -----------------------------------------------------
 
 
 @api.post("/session/<session_id>/simulate")
@@ -478,7 +465,6 @@ def inject_shock(session_id: str):
 
     decay_days = _optional_int(body.get("decay_days"), "decay_days")
     if decay_days is not None and decay_days < 1:
-        # `or 10` used to swallow a 0 and quietly run a different event than asked for.
         raise GameError("decay_days must be at least 1")
 
     sector = body.get("sector") or sectors.get(ticker, {}).get("sector")

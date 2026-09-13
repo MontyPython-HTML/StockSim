@@ -44,7 +44,6 @@ CONFERENCES = ["Midwest Growth", "Pacific Technology", "Global Consumer", "North
 BANKS = ["Harlow & Finch", "Brightwater Capital", "Kessler Securities", "Redwood Research", "Alder Partners"]
 DEPARTMENTS = ["facilities", "internal communications", "procurement", "regional sales", "corporate travel"]
 
-# (desk, headline, body, loud)
 FILLER = [
     ("corporate", "{name} to present at the {conference} investor conference next month",
      "Executives will give a scheduled overview of the business. The company said it does not plan to update its outlook at the event.", False),
@@ -144,7 +143,7 @@ def _company_names(tickers: list[str]) -> dict[str, str]:
     if missing:
         try:
             found = database.company_names(missing)
-        except Exception as exc:  # noqa: BLE001 - a missing catalog just means ticker-only headlines
+        except Exception as exc:  # noqa: BLE001
             log.warning("company names unavailable: %s", exc)
             found = {}
         for ticker in missing:

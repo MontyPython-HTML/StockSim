@@ -3,10 +3,6 @@
 @source "../../templates";
 @source "../js";
 
-/* Palette taken from the product mock: near-black page, one shade lifted for cards,
-   thin grey outlines instead of fills, a single vivid blue for action and a teal for
-   the one card that needs to stand out. Declared as theme tokens so the templates read
-   `bg-surface` / `text-muted` rather than a wall of hex literals. */
 @theme {
     --color-ink: #08090a;
     --color-ink-soft: #0f1113;
@@ -26,15 +22,10 @@
     --color-warn: #f0b429;
 }
 
-/* Native controls (date pickers, scrollbars) follow this, otherwise they render as
-   light chrome punched into a near-black page. */
 html {
     color-scheme: dark;
 }
 
-/* A checkbox that matches the palette. The native control ignores background and border
-   entirely without appearance-none, and a white square is the one thing on the page that
-   does not belong to the design. */
 @layer components {
     .tick {
         appearance: none;
@@ -77,24 +68,12 @@ html {
         cursor: not-allowed;
     }
 
-    /* The signals tab hangs off the right edge with its label set vertically, so it stays
-       inside the page's gutter instead of lying across the cards it opens over. */
     .signals-tab {
         writing-mode: vertical-rl;
         text-orientation: mixed;
     }
 }
 
-/* Utility cards. A grid would set every card in a row to the height of the tallest one and
-   leave a hole under its shorter neighbour, which is what made the right rail read as a
-   column of empty space. These cards pack one after another instead, so they fill whatever
-   height they are given.
-
-   The column count follows the width this packer is actually handed, not just the screen:
-   below xl the cards sit under the charts at full page width, and from xl on they ride
-   beside them at two fifths. Three columns over the full width and two beside the charts
-   is what keeps a card roughly the same size in both, which is the whole point - a single
-   long strip of cards down one side is exactly what this is here to avoid. */
 @layer components {
     .card-flow > * {
         break-inside: avoid;
@@ -118,8 +97,6 @@ html {
         }
     }
 
-    /* Dragging a card into a new place. The card stays where it is until the pointer
-       passes over a neighbour, and a dashed outline is what says "this is moving". */
     .card-flow > .is-dragging {
         opacity: 0.4;
         outline: 1px dashed var(--color-line-strong);
@@ -135,11 +112,6 @@ html {
     }
 }
 
-/* Which chart is the big one. The panels are all the same card, so the one carrying
-   is-hero draws at the large stage size and the rest share the grid - clicking a small
-   graph hands the class over rather than growing the page another row. The click target is
-   the plot itself and the hint it reveals, so the notes under each chart stay selectable
-   text instead of hidden buttons. */
 @layer components {
     .chart-card .chart-stage {
         height: 300px;
@@ -153,10 +125,6 @@ html {
         cursor: pointer;
     }
 
-    /* Only while the pointer is over a small panel (or a keyboard has landed on its
-       control): four permanent "enlarge" buttons would be more clutter than help. The
-       display is set here rather than with a utility class, which would beat the display:
-       none below; without it the arrow icon (a block-level svg) dropped under the word. */
     .chart-zoom-hint {
         display: inline-flex;
         white-space: nowrap;
@@ -171,16 +139,11 @@ html {
         pointer-events: auto;
     }
 
-    /* The panel that is already large has nothing to enlarge, so its control is taken out
-       of the tab order rather than left invisible and focusable. */
     .chart-card.is-hero .chart-zoom-hint {
         display: none;
     }
 }
 
-/* Folding and moving cards. Deliberately outside the component layer: the header rows carry
-   margin utilities, and the utilities layer wins over any component rule whatever its
-   specificity, which left a folded card with a gap under its title. */
 .card-collapsed > :first-child {
     margin-bottom: 0;
 }
@@ -194,8 +157,6 @@ html {
     white-space: nowrap;
 }
 
-/* Beside a side card's title the word "Hide" cost enough width to wrap "Bills & dividends"
-   onto two lines, so the arrow alone shows there. The word stays for screen readers. */
 .card-controls .collapse-label {
     position: absolute;
     width: 1px;
@@ -216,10 +177,6 @@ html {
     outline-offset: 4px;
 }
 
-/* The newswire strip. The track holds the day's headlines once, repeated, so the loop can
-   wrap without a visible jump. The drift itself comes from game.js rather than a keyframe
-   animation: an animation is a function of wall-clock time against a track of a fixed
-   length, so every headline that arrives re-times the strip and the scroll jumps. */
 @layer components {
     .newswire-viewport {
         overflow: hidden;
@@ -235,8 +192,6 @@ html {
         will-change: transform;
     }
 
-    /* One pass through the headlines. Each copy is laid out exactly like the chips inside it,
-       so a copy butting up against the next is indistinguishable from one long list. */
     .newswire-run {
         display: inline-flex;
         flex: none;
@@ -244,9 +199,6 @@ html {
         white-space: nowrap;
     }
 
-    /* Cards the player can fold away. The header row stays, everything under it hides, and
-       the choice is remembered per card - a dashboard nobody can quieten down is the thing
-       this is here to fix. */
     .card-collapsed > .collapse-body {
         display: none;
     }
@@ -259,8 +211,6 @@ html {
         transform: rotate(-90deg);
     }
 
-    /* The tab that opens the signal drawer lives on the right edge, where a hairline grey
-       sliver went unnoticed; the dot pulses while something in it has not been read. */
     .signals-badge-dot {
         width: 0.5rem;
         height: 0.5rem;
@@ -286,8 +236,6 @@ html {
         }
     }
 
-    /* The newswire is left out of this on purpose: its motion is driven from game.js, which
-       reads the same preference and simply never starts the drift. */
     @media (prefers-reduced-motion: reduce) {
         .signals-attention .signals-badge-dot {
             animation: none;

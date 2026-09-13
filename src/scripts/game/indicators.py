@@ -17,7 +17,6 @@ def compute_all(df: pd.DataFrame) -> pd.DataFrame:
     delta = close.diff()
     gains = delta.clip(lower=0)
     losses = -delta.clip(upper=0)
-    # Wilder's smoothing, the standard RSI formulation.
     avg_gain = gains.ewm(alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD).mean()
     avg_loss = losses.ewm(alpha=1 / RSI_PERIOD, adjust=False, min_periods=RSI_PERIOD).mean()
     rs = avg_gain / avg_loss.replace(0, pd.NA)

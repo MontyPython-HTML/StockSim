@@ -10,8 +10,6 @@ from scripts.api import finance
 from scripts.database import database
 from scripts.ingestion import universes
 
-# yfinance is rate-limited and occasionally just refuses a symbol; sleeping between
-# tickers costs a few seconds and reliably avoids the 429s a tight loop produces.
 PAUSE_BETWEEN_TICKERS = 0.4
 
 
@@ -20,8 +18,6 @@ def parse_date(value: str) -> date:
 
 
 def ingest(ticker: str, start: date, end: date) -> int:
-    # The whole body is guarded: one delisted symbol, one throttled download or one
-    # transient database error must not abandon the other hundred in the batch.
     try:
         frame = finance.fetch_ohlcv(ticker, start, end)
         rows = finance.to_price_rows(ticker, frame)
@@ -30,7 +26,7 @@ def ingest(ticker: str, start: date, end: date) -> int:
             return 0
         written = database.upsert_prices(ticker, rows)
         bounds = database.fetch_date_bounds(ticker)
-    except Exception as exc:  # noqa: BLE001 - see above
+    except Exception as exc:  # noqa: BLE001
         print(f"{ticker}: FAILED ({type(exc).__name__}: {str(exc)[:120]})")
         return 0
     print(
@@ -51,8 +47,6 @@ def resolve_tickers(args) -> list[str]:
         for name in (part.strip() for part in args.universe.split(",")):
             if name:
                 wanted.extend(universes.tickers(name))
-    # Dedupe but keep the caller's ordering so `--ticker AAPL --universe nasdaq100`
-    # downloads the interesting name first.
     seen: set[str] = set()
     return [t for t in wanted if not (t in seen or seen.add(t))]
 

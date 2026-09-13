@@ -18,8 +18,6 @@ import config
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
-# Rows per INSERT statement. A full history is over eleven thousand rows, and sending
-# that as one statement blows the server's per-message memory budget on a small instance.
 INSERT_PAGE_SIZE = 1000
 
 class DatabaseBusy(RuntimeError):
@@ -33,14 +31,7 @@ class DatabaseBusy(RuntimeError):
 
 _pool: ThreadedConnectionPool | None = None
 _pool_lock = threading.Lock()
-# Connections the pool opens itself (its minimum, at creation) are never seen by the
-# check-in hook, so "never seen" counts as "as old as the pool" - which is exactly when
-# they were dialled.
 _pool_created_at = 0.0
-# One permit per possible connection. psycopg2 hands out connections under a lock it holds
-# while it dials the server, so a burst of cold requests queues behind that lock with no
-# deadline and no way out. A permit with a timeout in front of it turns the same situation
-# into "we are at capacity, come back in a moment".
 _slots: threading.BoundedSemaphore | None = None
 
 
@@ -49,9 +40,6 @@ def _get_pool() -> ThreadedConnectionPool:
     if _pool is None:
         with _pool_lock:
             if _pool is None:
-                # timeouts travel with the connection rather than the call site: a socket
-                # that never answers and a query that never returns are both ways to lose
-                # a connection for good.
                 _pool = ThreadedConnectionPool(
                     config.DB_POOL_MIN,
                     config.DB_POOL_MAX,
@@ -85,8 +73,6 @@ def pool_status() -> dict:
     }
 
 
-# When each pooled connection was last handed back, so idle ones can be tested before
-# they are trusted. Keyed by id(): pool connections live for the life of the process.
 _last_used: dict[int, float] = {}
 _last_used_lock = threading.Lock()
 
@@ -153,7 +139,7 @@ def _checkin(pool: ThreadedConnectionPool, conn) -> None:
     """Hand a connection back, closing rather than pooling one that is already dead."""
     try:
         pool.putconn(conn, close=bool(conn.closed))
-    except Exception:  # noqa: BLE001 - a failed check-in must not mask the real error
+    except Exception:  # noqa: BLE001
         pass
     finally:
         _stamp_returned(conn)
@@ -217,12 +203,10 @@ def get_transaction(dict_rows: bool = True):
             conn.rollback()
             raise
         finally:
-            # Back to the pool's working default, even if the caller raised mid-transaction.
             conn.autocommit = True
 
 
 def apply_schema() -> None:
-    # One multi-statement string: PostgreSQL runs it as a single implicit transaction.
     with get_cursor(dict_rows=False) as cur:
         cur.execute(SCHEMA_PATH.read_text())
 
@@ -248,8 +232,6 @@ def health() -> dict:
         cur.fetchone()
     return {"database": "ok", **pool_status()}
 
-
-# --- prices ---------------------------------------------------------------
 
 
 def upsert_prices(ticker: str, rows: Iterable[tuple]) -> int:
@@ -329,8 +311,6 @@ def fetch_date_bounds(ticker: str) -> dict | None:
         row = cur.fetchone()
     return row if row and row["row_count"] else None
 
-
-# --- sessions -------------------------------------------------------------
 
 
 def create_session(
@@ -418,8 +398,6 @@ def update_session(session_id: str, **fields: Any) -> dict | None:
         )
         return cur.fetchone()
 
-
-# --- holdings and trades --------------------------------------------------
 
 
 def get_holding(session_id: str, ticker: str) -> dict | None:
@@ -547,8 +525,6 @@ def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
         )
         return _revive_dates(cur.fetchone())
 
-
-# --- standing orders ------------------------------------------------------
 
 
 def settle_cash_flows(session_id: str, flows: list[dict], prices_on, plan_sales) -> tuple[list[dict], Decimal]:
@@ -732,8 +708,6 @@ def settle_dividends(session_id: str, tickers: list[str], after: date, through: 
         declarations = cur.fetchall()
         if not declarations:
             return []
-        # Reinvestment buys shares, so the position has to be read and written as one: two
-        # payouts on the same day must land on a cost basis that knows about the first.
         positions: dict[str, dict] = {}
         if reinvest:
             cur.execute(
@@ -751,10 +725,6 @@ def settle_dividends(session_id: str, tickers: list[str], after: date, through: 
         for declaration in declarations:
             ticker = declaration["ticker"]
             ex_date = declaration["ex_date"]
-            # A player must own the shares before the ex-date. Rebuild the position at
-            # that date instead of using today's holdings; otherwise selling after the
-            # dividend would incorrectly erase a payment already earned, and buying after
-            # the ex-date would incorrectly receive it.
             shares = sum(
                 (trade["shares"] if trade["side"] == "BUY" else -trade["shares"])
                 for trade in trades
@@ -773,9 +743,6 @@ def settle_dividends(session_id: str, tickers: list[str], after: date, through: 
             close = declaration.get("close")
             price = Decimal(str(close)).quantize(Decimal("0.0001")) if close else Decimal("0")
             if reinvest and price > 0:
-                # Fractional shares: a payout is never a round number of shares, and the
-                # money has to go somewhere. The payment is exactly what was declared, so
-                # what the shares cost and what they are worth stay in step.
                 reinvested_shares = (amount / price).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
                 reinvest_price = price
                 position = positions.get(ticker)
@@ -798,9 +765,6 @@ def settle_dividends(session_id: str, tickers: list[str], after: date, through: 
                     """,
                     (session_id, ticker, total, positions[ticker]["avg_cost"]),
                 )
-                # In the trade ledger as a purchase, because that is what it is: the
-                # position and the ledger have to agree, and the next dividend is paid on
-                # whatever the ledger says. Flagged so the page can call it a payout.
                 cur.execute(
                     """
                     INSERT INTO transactions
@@ -839,19 +803,6 @@ def settle_dividends(session_id: str, tickers: list[str], after: date, through: 
         return applied
 
 
-def list_expenses(session_id: str) -> list[dict]:
-    with get_cursor() as cur:
-        cur.execute(
-            "SELECT id, bill_id, label, payee, due_date, amount, cash_after "
-            "FROM session_expenses WHERE session_id = %s ORDER BY due_date, id",
-            (session_id,),
-        )
-        return cur.fetchall()
-
-
-# --- MCP event log --------------------------------------------------------
-
-
 def insert_mcp_event(
     session_id: str, ticker: str, sim_date: date, event_type: str, payload: dict
 ) -> int:
@@ -878,8 +829,6 @@ def update_mcp_event_payload(event_id: int, payload: dict) -> None:
             (json.dumps(payload), event_id),
         )
 
-
-# --- ticker universe ------------------------------------------------------
 
 
 def upsert_tickers(rows: Iterable[tuple]) -> int:
@@ -983,8 +932,6 @@ def universe_stats() -> dict:
         )
         return cur.fetchone()
 
-
-# --- per-user simulated future --------------------------------------------
 
 _SIMULATION_COLUMNS = (
     "ticker",
@@ -1114,9 +1061,6 @@ def rescale_simulated_prices(session_id: str, ticker: str, updates: Iterable[tup
     updates = list(updates)
     if not updates:
         return 0
-    # One statement, not one per bar. `executemany` sends each row as its own round trip,
-    # which against a remote database made a single 252-bar shock take about seventeen
-    # seconds; a VALUES list is paged the same way the insert path already is.
     sql = """
         UPDATE simulated_prices AS target
         SET open = batch.open,
@@ -1130,15 +1074,11 @@ def rescale_simulated_prices(session_id: str, ticker: str, updates: Iterable[tup
           AND target.ticker = batch.ticker
           AND target.ts = batch.ts
     """
-    # The casts are not decoration: a batch whose event_id is all NULLs would otherwise be
-    # inferred as text, and coalesce(text, bigint) is a type error rather than a shrug.
     template = "(%s::uuid, %s, %s::date, %s, %s, %s, %s, %s, %s::bigint)"
     payload = [
         (session_id, ticker.upper(), ts, o, h, low, c, v, event)
         for o, h, low, c, v, event, ts in updates
     ]
-    # Every row is a *multiplier* on the bar it replaces, so this is the one write that
-    # genuinely has to be all-or-nothing: a half-applied shock cannot be re-run.
     with get_transaction(dict_rows=False) as cur:
         execute_values(cur, sql, payload, template=template, page_size=INSERT_PAGE_SIZE)
     return len(payload)
@@ -1156,15 +1096,6 @@ def latest_quotes(session_id: str, tickers: list[str], as_of: date) -> dict[str,
     if not tickers:
         return {}
 
-    # Which source a symbol answers from depends on the session, not just the date. A
-    # forked symbol reads its generated bars from the fork onward; the real series must be
-    # cut off there, because the catalog now holds real history past any fork and taking
-    # the newest row across both would quote a real 2025 close for a chart that is drawing
-    # generated prices - the player would trade at a price they cannot see.
-    #
-    # Each branch is its own ORDER BY ... LIMIT 1 so Postgres walks the (ticker, ts DESC)
-    # index backwards and stops after one row; written as a single UNION with an outer sort
-    # it would read every bar up to as_of for every symbol instead.
     latest = """
         SELECT * FROM (
             (SELECT ts, close, FALSE AS simulated FROM stock_prices

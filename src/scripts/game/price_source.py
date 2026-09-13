@@ -18,8 +18,6 @@ import pandas as pd
 from scripts.database import database
 from scripts.game import price_cache, simulation
 
-# Before any listing in the catalog, so counting every bar up to a day needs no second
-# lookup for the series' own first day. price_cache loads from the same kind of bound.
 FIRST_BAR = date(1800, 1, 1)
 
 
@@ -81,13 +79,7 @@ class SimulatedSource:
         self._frame: pd.DataFrame | None = None
         self._dates: pd.Series | None = None
 
-    # --- internals --------------------------------------------------------
-
     def _build(self) -> pd.DataFrame:
-        # The *whole* real series, not a lookback window: the chart and the indicators
-        # have to span the real days a session replays, not just the last year before the
-        # fork. price_cache already holds the per-ticker frame, so this costs no query,
-        # and simulation keeps the splice-and-recompute result for the next request.
         real = price_cache.history_through(self.ticker, self.config.fork_date)
         return simulation.merged_frame(self.session_id, self.config, real)
 
@@ -133,14 +125,10 @@ class SimulatedSource:
         if frame.empty:
             return frame
         if sim_date > frame["ts"].iloc[-1]:
-            # The player walked off the end of the generated horizon; roll more bars.
             self.config = simulation.extend_horizon(self.session_id, self.config)
             self.refresh()
             frame = self._merged()
-        # The frame is sorted by ts, so a binary search beats filtering the whole thing.
         return frame.iloc[: int(frame["ts"].searchsorted(sim_date, side="right"))]
-
-    # --- the same surface RealSource offers -------------------------------
 
     def history_through(self, sim_date: date) -> pd.DataFrame:
         return self._through(sim_date)
@@ -239,8 +227,6 @@ def fork_session(session_id: str, ticker: str, fork_date: date, **overrides) -> 
             current, int(overrides.get("horizon_days") or current.horizon_days)
         )
     else:
-        # Slice the cached frame instead of re-fetching a year of bars. Same window the
-        # direct query used, without sending eleven thousand rows over the network twice.
         window = price_cache.history_through(ticker, fork_date)
         real = window[window["ts"] >= fork_date - timedelta(days=400)]
         anchor = None if real.empty else float(real["close"].iloc[-1])
@@ -253,7 +239,5 @@ def fork_session(session_id: str, ticker: str, fork_date: date, **overrides) -> 
     database.create_simulation(session_id, **config_.persist_fields())
     source = SimulatedSource(session_id, config_.persist_fields())
     simulation.ensure_future(session_id, config_)
-    # Unconditional: the stored config just changed, and a cached frame was built from the
-    # old one even if every bar it holds happens to be the same.
     simulation.invalidate(session_id, ticker)
     return source

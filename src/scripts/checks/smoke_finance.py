@@ -47,8 +47,6 @@ def money(value) -> Decimal:
     return Decimal(str(value)).quantize(CENT)
 
 
-# --- fixtures -------------------------------------------------------------
-
 
 def dividend_candidate() -> dict:
     """A symbol with a declared dividend and enough history around it to trade."""
@@ -123,8 +121,6 @@ def clean_up(session_ids: list[str]) -> None:
     print(f"\ncleaned up {len(session_ids)} smoke session(s)")
 
 
-# --- dividends ------------------------------------------------------------
-
 
 def test_dividends(candidate: dict) -> list[str]:
     ticker = candidate["ticker"]
@@ -182,13 +178,11 @@ def test_dividends(candidate: dict) -> list[str]:
             f"{rows[0]['shares']} x {rows[0]['per_share']}",
         )
 
-    # Idempotency: the same window settled again must not pay a second time.
     cash_before = money(engine.get_state(sid)["portfolio"]["cash_balance"])
     again = database.settle_dividends(sid, [ticker], ex_date - timedelta(days=1), ex_date)
     cash_after = money(engine.get_state(sid)["portfolio"]["cash_balance"])
     check("settling the same window again pays nothing", again == [] and cash_after == cash_before)
 
-    # Selling after the ex-date must not claw back a payment already earned.
     holding = before["portfolio"]["positions"][0]["shares"]
     engine.execute_trade(sid, ticker, "SELL", holding)
     sold = engine.get_state(sid)
@@ -357,8 +351,6 @@ def test_reinvestment(candidate: dict) -> list[str]:
         check("dated on the ex-date", ledger[0]["date"] == ex_date.isoformat(), ledger[0]["date"])
         check("and sized like the payment", abs(ledger[0]["shares"] - float(reinvested)) < 1e-6)
 
-    # Reinvested shares are real shares: the ledger has to know about them, or the next
-    # dividend would be paid on a number the player never bought.
     with database.get_cursor() as cur:
         cur.execute(
             "SELECT count(*) AS n FROM transactions WHERE session_id = %s AND ticker = %s AND reinvested",
@@ -366,7 +358,6 @@ def test_reinvestment(candidate: dict) -> list[str]:
         )
         check("and persisted", cur.fetchone()["n"] == 1)
 
-    # Turns are reversible: switching back to cash is not a one-way door.
     engine.set_reinvestment(sid, False, focus=ticker)
     check("it can be switched back to cash", engine.get_state(sid)["reinvest_dividends"] is False)
     return [sid]
@@ -398,8 +389,6 @@ def test_reinvestment_is_return_neutral(candidate: dict) -> list[str]:
     return [results[0][1], results[1][1]]
 
 
-# --- bills and paychecks --------------------------------------------------
-
 
 def inject_bank(sid: str, session_date: date, amount: str, offsets=(1, 2, 3)) -> list[dict]:
     """Stand-in standing orders, straight into the per-session cache (no Nessie call)."""
@@ -426,7 +415,6 @@ def test_bills(candidate: dict) -> list[str]:
     sid, state = start(ticker, ex_date - timedelta(days=30), ex_date + timedelta(days=20))
     engine.execute_trade(sid, ticker, "BUY", 100)
 
-    # Two wallets: the Nessie switch is on, and the standing orders are the ones we inject.
     database.update_session(sid, finances_enabled=True, salary_amount=Decimal("2000"))
     sim_date = date.fromisoformat(engine.get_state(sid)["sim_date"])
     bills = inject_bank(sid, sim_date, "50")
@@ -463,7 +451,7 @@ def test_bills(candidate: dict) -> list[str]:
     check(
         "and the headline return still excludes it",
         abs(
-            after["portfolio"]["total_return_pct"]
+            after["portfolio"]["trading_return_pct"]
             - (
                 after["portfolio"]["net_worth"]
                 + after["portfolio"]["bills_paid"]
@@ -474,12 +462,11 @@ def test_bills(candidate: dict) -> list[str]:
             * 100
         )
         < 1e-9,
-        f"{after['portfolio']['total_return_pct']:.4f}%",
+        f"{after['portfolio']['trading_return_pct']:.4f}%",
     )
     if not salary_rows:
         print("        (no payday in this step; the paycheck path is covered by the return check)")
 
-    # Overdraft: the cash cannot cover the bill, so shares are sold at the closing price.
     database.update_session(sid, cash_balance=Decimal("10"))
     inject_bank(sid, date.fromisoformat(after["sim_date"]), "5000")
     overdrawn = engine.advance_day(sid, days=1, with_ai=False)
@@ -502,7 +489,7 @@ def test_pure_mode_skips_money(candidate: dict) -> list[str]:
     print("\npure simulation (finances off)")
     sid, state = start(ticker, ex_date - timedelta(days=30), ex_date + timedelta(days=10))
     sim_date = date.fromisoformat(state["sim_date"])
-    inject_bank(sid, sim_date, "5000")  # a bank exists and is ignored
+    inject_bank(sid, sim_date, "5000")
     after = engine.advance_day(sid, days=1, with_ai=False)
     check("no bills are charged", after["expenses"]["charged"] == [])
     check("the panel says finances are off", after["expenses"]["enabled"] is False)
@@ -513,25 +500,28 @@ def test_pure_mode_skips_money(candidate: dict) -> list[str]:
 
 
 def test_return_arithmetic() -> None:
-    """The headline the player sees: stock performance only."""
+    """Two returns: the headline is stock performance, the account keeps the money in."""
     print("\nreturn percentage")
     gain = engine._portfolio({"cash_balance": Decimal("10500"), "starting_cash": Decimal("10000")}, [], {}, 0.0, 0.0)
-    check("a 5% gain reads as 5%", abs(gain["total_return_pct"] - 5.0) < 1e-9, f"{gain['total_return_pct']:.4f}")
+    check("a 5% gain reads as 5%", abs(gain["trading_return_pct"] - 5.0) < 1e-9, f"{gain['trading_return_pct']:.4f}")
+    check("with no flows both numbers agree", abs(gain["total_return_pct"] - 5.0) < 1e-9, f"{gain['total_return_pct']:.4f}")
     paycheck = engine._portfolio(
         {"cash_balance": Decimal("11000"), "starting_cash": Decimal("10000")}, [], {}, 0.0, 1000.0
     )
-    check("a paycheck alone leaves the return at 0%", abs(paycheck["total_return_pct"]) < 1e-9, f"{paycheck['total_return_pct']:.4f}")
+    check("a paycheck alone leaves the stock return at 0%", abs(paycheck["trading_return_pct"]) < 1e-9, f"{paycheck['trading_return_pct']:.4f}")
+    check("a paycheck alone lifts the account 10%", abs(paycheck["total_return_pct"] - 10.0) < 1e-9, f"{paycheck['total_return_pct']:.4f}")
     bill = engine._portfolio(
         {"cash_balance": Decimal("9500"), "starting_cash": Decimal("10000")}, [], {}, 500.0, 0.0
     )
-    check("a paid bill alone leaves the return at 0%", abs(bill["total_return_pct"]) < 1e-9, f"{bill['total_return_pct']:.4f}")
-    back = engine._portfolio(
-        {"cash_balance": Decimal("9500"), "starting_cash": Decimal("10000")}, [], {}, 500.0, 0.0
+    check("a paid bill alone leaves the stock return at 0%", abs(bill["trading_return_pct"]) < 1e-9, f"{bill['trading_return_pct']:.4f}")
+    check("a paid bill alone costs the account 5%", abs(bill["total_return_pct"] + 5.0) < 1e-9, f"{bill['total_return_pct']:.4f}")
+    check("the cash is still down even when the return is flat", bill["net_worth"] == 9500.0, str(bill["net_worth"]))
+    both = engine._portfolio(
+        {"cash_balance": Decimal("10300"), "starting_cash": Decimal("10000")}, [], {}, 700.0, 1000.0
     )
-    check("the loss is still shown when it is real", back["total_return_pct"] == 0.0 and back["net_worth"] == 9500.0)
+    check("bills and pay net out of the stock return", abs(both["trading_return_pct"]) < 1e-9, f"{both['trading_return_pct']:.4f}")
+    check("and stay in the account return", abs(both["total_return_pct"] - 3.0) < 1e-9, f"{both['total_return_pct']:.4f}")
 
-
-# --- the page's own copy of the state -------------------------------------
 
 
 def get_json(path: str):
@@ -579,7 +569,6 @@ def test_api_payload(session_id: str) -> None:
     check("expenses carries the charged ledger", isinstance(body.get("expenses", {}).get("charged"), list))
     check("the health endpoint reports the pool", "max" in health(), str(health()))
 
-    # The switch itself, over the wire, the way the checkbox uses it.
     wanted = not bool(body.get("reinvest_dividends"))
     toggled = post_json(f"/api/session/{session_id}/dividends", {"reinvest": wanted})
     check("the reinvest switch round-trips", toggled.get("reinvest_dividends") is wanted, str(toggled.get("reinvest_dividends")))
@@ -598,8 +587,6 @@ def test_api_payload(session_id: str) -> None:
         print(f"        {exc}")
     check("the engine state survives json.dumps", serialisable)
 
-
-# --- entry point ----------------------------------------------------------
 
 
 def main() -> int:

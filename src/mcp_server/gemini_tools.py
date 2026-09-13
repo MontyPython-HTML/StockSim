@@ -17,18 +17,10 @@ REQUEST_TIMEOUT_MS = 10000
 MAX_ATTEMPTS = 4
 FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash"]
 
-# Every response here is a small JSON object. Without a ceiling the model is free to pad
-# the prose fields, which costs output tokens and latency on every single call.
 MAX_OUTPUT_TOKENS = 900
 
-# A model/key pair that just failed is very unlikely to work again a second later, and
-# retrying it costs a full REQUEST_TIMEOUT_MS before the chain moves on. Remembering the
-# failure for a short while turns a dead key from a per-call tax into a one-off.
 FAILURE_COOLDOWN_SECONDS = 90
 
-# Identical prompt means identical question: the same pattern, on the same symbol, on the
-# same bar. Teaching answers are reused rather than re-bought, which is what makes
-# replaying a stretch - or two players trading the same week - cost one call instead of N.
 CACHE_TTL_SECONDS = 6 * 60 * 60
 CACHE_MAX_ENTRIES = 256
 
@@ -49,8 +41,6 @@ def _cache_get(key: str) -> dict | None:
             _cache.pop(key, None)
             return None
         _cache.move_to_end(key)
-    # Copied on the way out so a caller stamping session_id onto the result cannot
-    # write that into every future reader's copy.
     return json.loads(json.dumps(payload))
 
 
@@ -83,20 +73,10 @@ def _mark_ok(pair: tuple[str, str]) -> None:
         _cooldowns.pop(pair, None)
 
 
-def cache_stats() -> dict:
-    with _state_lock:
-        return {
-            "cached_answers": len(_cache),
-            "cooling_down": [f"{model}" for model, _ in _cooldowns],
-        }
-
-
 @lru_cache(maxsize=4)
 def _client_for(api_key: str) -> genai.Client:
-    # Cached: a garbage-collected genai.Client closes the httpx transport its siblings share.
     return genai.Client(
         api_key=api_key,
-        # Bounded so a Gemini 503 falls through to the next key instead of retrying for a minute.
         http_options=types.HttpOptions(
             timeout=REQUEST_TIMEOUT_MS,
             retry_options=types.HttpRetryOptions(attempts=1),

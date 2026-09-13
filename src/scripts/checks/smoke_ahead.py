@@ -41,8 +41,6 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
-# --- fixtures -------------------------------------------------------------
-
 
 def tradable_ticker(active_days: int = 400) -> str:
     """A symbol with enough consecutive history to run a multi-week session on."""
@@ -134,8 +132,6 @@ def window_of(state: dict) -> list[tuple]:
     ]
 
 
-# --- the preview matches the tick ----------------------------------------
-
 
 def test_matches_advance(ticker: str, start_date: date, end_date: date, label: str, ticks: int = 6) -> list[str]:
     print(f"\n{label}: {ticker} {start_date.isoformat()} -> {end_date.isoformat()}")
@@ -180,9 +176,6 @@ def test_matches_advance(ticker: str, start_date: date, end_date: date, label: s
             continue
         matched += 1
 
-        # What the page relies on: the preview is one day further along the same calendar, so
-        # all but the newest bar are the bars already on screen. The update that follows the
-        # tick then has nothing to draw, which is what keeps a slide from being cut short.
         if peeked["chart"][1:] == walked["chart"][1:] and peeked["chart"][:-1] != walked["chart"]:
             continued += 1
 
@@ -209,16 +202,12 @@ def test_fast_forward(ticker: str, start_date: date, end_date: date) -> list[str
 
 def test_focus_and_horizon(ticker: str, start_date: date) -> list[str]:
     print("\nfocus, and the end of the run")
-    # A deliberately short run, so the clock can be walked to the end of it in one call.
     sid, _ = start(ticker, start_date, start_date + timedelta(days=10))
     sessions = [sid]
     state = engine.get_state(sid, focus=ticker)
 
     unknown = engine.peek_chart(sid, focus="ZZZZ")
     check("an unknown focus falls back to the first symbol", unknown["focus"] == ticker, str(unknown["focus"]))
-    # One bar further along the same calendar: the same dates shifted up, or - while the
-    # window is still filling, which is what a session near the start of a symbol's history
-    # gets - the same dates with one more day on the end.
     previewed = [row["date"] for row in unknown["chart"]]
     served = [row["date"] for row in state["chart"]]
     check(
@@ -227,8 +216,6 @@ def test_focus_and_horizon(ticker: str, start_date: date) -> list[str]:
         f"{len(previewed)} vs {len(served)} bars",
     )
 
-    # Walk the clock past the end of the run: the preview must go quiet rather than roll
-    # anything on past the horizon.
     engine.advance_day(sid, days=10_000, with_ai=False)
     check("the clock reached the end of the run", engine.get_state(sid)["status"] == "finished")
     done = engine.peek_chart(sid, focus=ticker)
@@ -264,8 +251,6 @@ def test_simulated_future(ticker: str, start_date: date, end_date: date) -> list
     return [sid]
 
 
-# --- over the wire --------------------------------------------------------
-
 
 def get_json(path: str) -> tuple[int, dict]:
     try:
@@ -288,8 +273,6 @@ def test_api(session_id: str) -> None:
     check("and a chart window", len(payload.get("chart") or []) > 0, str(len(payload.get("chart") or [])))
 
     status, _ = get_json("/api/session/not-a-uuid/ahead")
-    # Every other session route answers a malformed id as a JSON error rather than letting
-    # psycopg2 raise on the uuid column; this one has to behave the same way.
     check("a malformed session id is a JSON error, not a 500", status == 400, str(status))
 
     session = database.get_session(session_id)
@@ -298,8 +281,6 @@ def test_api(session_id: str) -> None:
     after = database.get_session(session_id)["sim_date"]
     check("asking over HTTP does not move the clock", before == after, f"{before} -> {after}")
 
-
-# --- entry point ----------------------------------------------------------
 
 
 def main() -> int:

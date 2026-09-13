@@ -1,10 +1,3 @@
-/* TradingView Lightweight Charts setup and update helpers.
-
-   Colours mirror the design tokens in static/input/input.css: near-black panels, a cyan
-   price line, yellow for the 20-day average and MACD signal, blue for the 50-day average
-   and the MACD line - the colours the lessons name. Every tick replaces the whole window
-   with setData instead of tweening between arrays, so a sliding window steps cleanly
-   instead of wobbling every point into its neighbour's place. */
 
 const LWC = LightweightCharts;
 
@@ -13,7 +6,6 @@ const GRID = 'rgba(154, 163, 176, 0.06)';
 const CROSSHAIR = 'rgba(154, 163, 176, 0.45)';
 const LABEL_BG = '#262a30';
 const FONT = 'ui-sans-serif, system-ui, sans-serif';
-// Price, RSI and MACD share a crosshair, so their plot areas have to line up day for day.
 const AXIS_WIDTH = 72;
 
 const C = {
@@ -49,13 +41,11 @@ function formatDay(key) {
     return `${MONTHS[Number(month) - 1]} ${Number(day)}, ${year}`;
 }
 
-// A missing value becomes a whitespace point, which keeps every chart on the same days.
 const toPoint = (time, value) => (value == null ? { time } : { time, value });
 
 const usd = (value) => (value == null ? '—'
     : `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 
-// Whole dollars: "$10.0k" rounding repeated the same label down a narrow account axis.
 const wholeDollars = (value) => (Number.isFinite(Number(value)) ? `$${Math.round(value).toLocaleString('en-US')}` : '');
 
 function compactNumber(value) {
@@ -72,15 +62,12 @@ const QUIET = { priceLineVisible: false, lastValueVisible: false, crosshairMarke
 
 function createView(container, { magnet = true } = {}) {
     const crosshairLine = { color: CROSSHAIR, style: LWC.LineStyle.Dashed, labelBackgroundColor: LABEL_BG };
-    // Magnet snaps the horizontal line to whichever series is nearest, often an average rather
-    // than the price, so only the vertical line is drawn and the readout carries the values.
     const hiddenLine = { ...crosshairLine, visible: false, labelVisible: false };
     const chart = LWC.createChart(container, {
         autoSize: true,
         layout: {
             background: { type: LWC.ColorType.Solid, color: 'transparent' },
             textColor: TICK, fontFamily: FONT, fontSize: 11,
-            // Credited once in text under the price chart instead of a badge on all five.
             attributionLogo: false,
         },
         grid: { vertLines: { visible: false }, horzLines: { color: GRID } },
@@ -102,8 +89,6 @@ function createView(container, { magnet = true } = {}) {
             vertLine: crosshairLine,
             horzLine: hiddenLine,
         },
-        // The window slides every tick, so a drag or zoom would be thrown away a second
-        // later; leaving these off also lets the mouse wheel scroll the page.
         handleScroll: false,
         handleScale: false,
         localization: { dateFormat: 'MMM dd, yyyy' },
@@ -149,7 +134,6 @@ function readoutItem({ label, value, color, strong }) {
     return item;
 }
 
-// Hovering shows that day's numbers; otherwise the readout sits on the latest day.
 function paintReadout(view) {
     const key = view.hovered && view.rows.has(view.hovered) ? view.hovered : view.last;
     const row = key ? view.rows.get(key) : null;
@@ -306,7 +290,6 @@ function createBasketChart(container) {
     const view = createView(container, { magnet: false });
     const legend = document.createElement('div');
     legend.className = 'mt-3 flex flex-wrap gap-2 text-xs tabular-nums';
-    // After the fixed-height stage, not inside it, or the chips spill over the note below.
     (container.closest('.chart-stage') || container).after(legend);
 
     Object.assign(view, {
@@ -352,7 +335,6 @@ function basketLegendButton(view, ticker, label, color) {
 
 function updateBasketChart(view, payload) {
     const series = payload.series || [];
-    // Every symbol trades on its own calendar, so the axis is the union of their dates.
     const times = [...new Set(series.flatMap((s) => s.points.map((p) => dayKey(p.date))))].sort();
 
     const signature = series.map((row) => `${row.ticker}${row.simulated ? '~' : ''}`).join(',');
@@ -419,7 +401,6 @@ function updateEquityChart(view, payload) {
     const start = Number(payload.starting_cash);
     if (Number.isFinite(start) && start !== view.start) {
         view.start = start;
-        // A hair under the start, so an untouched account reads as even rather than red.
         view.series.line.applyOptions({ baseValue: { type: 'price', price: start - 0.01 } });
         const options = {
             price: start, color: 'rgba(154, 163, 176, 0.45)', lineWidth: 1,
@@ -449,7 +430,6 @@ function updateCharts(charts, state) {
         return { time, value: row.volume, color: fade(down ? C.down : C.up, 0.22) };
     }));
 
-    // Only this symbol's fills belong on this symbol's chart.
     const onChart = new Set(times);
     const fills = state.trades
         .filter((t) => t.ticker === state.focus && onChart.has(dayKey(t.date)))

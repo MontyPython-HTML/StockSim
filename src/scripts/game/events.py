@@ -42,8 +42,6 @@ SCOPE_SECTOR = "sector"
 SCOPE_MARKET = "market"
 SCOPES = (SCOPE_TICKER, SCOPE_SECTOR, SCOPE_MARKET)
 
-# Deliberately generic: these stand in for a real newswire, and the point is that the
-# student has to decide whether a headline is worth acting on.
 _COMPANY_HEADLINES: list[tuple[str, str, float]] = [
     ("{ticker} beats on earnings and raises full-year guidance", "Revenue and margin both came in ahead of consensus.", 0.6),
     ("{ticker} unveils next-generation AI accelerator", "The company says the new part ships to cloud partners next quarter.", 0.55),
@@ -150,7 +148,6 @@ def _from_gemini(
     decay = payload.get("decay_days")
     return {
         "ticker": ticker,
-        # The caller chose the shape of the story; Gemini chose what the story is.
         "scope": scope,
         "sector": payload.get("sector") or sector,
         "as_of": sim_date.isoformat(),
@@ -187,8 +184,6 @@ def resolve_targets(sources: dict, event: dict, sectors: dict | None = None) -> 
         ]
         if picked:
             return picked
-        # Nothing else in the basket shares that sector (or the catalog is silent): a
-        # sector story about one holding is just a story about that holding.
         return [primary] if primary in sources else []
     return [primary] if primary in sources else []
 
@@ -256,8 +251,6 @@ def apply(
     total = 0
     for ticker in targets:
         source = sources[ticker]
-        # Real history is shared and stays real, so an unforked symbol is skipped rather
-        # than rewritten. The stored payload records who was actually reachable.
         if getattr(source, "kind", None) != "simulated":
             continue
         scale = _peer_scale(session_id, event, ticker)
@@ -284,7 +277,6 @@ def apply(
         "affected_tickers": [entry["ticker"] for entry in affected],
         "event_id": event_id,
     }
-    # Rewrite the row now that we know how far the shock actually reached.
     database.update_mcp_event_payload(event_id, stored)
     return stored
 
@@ -311,7 +303,7 @@ def run(
         from scripts.api import gemini_mcp_client
 
         payload = gemini_mcp_client.market_shock(session_id, ticker, sim_date, scope=scope)
-    except Exception as exc:  # noqa: BLE001 - any failure must still produce an event
+    except Exception as exc:  # noqa: BLE001
         log.warning("Gemini market shock failed: %s: %s", type(exc).__name__, exc)
         payload = None
 

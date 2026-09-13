@@ -36,7 +36,6 @@ PROFILE_LIMIT = 6
 PROFILE_TTL_SECONDS = 300
 CENT = Decimal("0.01")
 
-# A session with no reachable bank is still playable; it just has no bills.
 _bills_cache: dict[str, list[dict]] = {}
 _bank_cache: dict[str, dict] = {}
 _profiles: dict = {"at": 0.0, "rows": None}
@@ -46,8 +45,6 @@ _profiles_lock = threading.Lock()
 def _as_date(value) -> date:
     return value if isinstance(value, date) else date.fromisoformat(str(value))
 
-
-# --- what the bank knows --------------------------------------------------
 
 
 def normalise_bills(raw_bills: list[dict]) -> list[dict]:
@@ -87,7 +84,7 @@ def paycheck_from_deposits(deposits: list[dict]) -> dict | None:
 def default_paycheck(account_id: str) -> Decimal:
     try:
         paycheck = paycheck_from_deposits(nessie.get_account_deposits(account_id))
-    except Exception as exc:  # noqa: BLE001 - no payroll on file is not a reason to refuse a run
+    except Exception as exc:  # noqa: BLE001
         log.warning("Nessie deposits unavailable for %s: %s", account_id, exc)
         return Decimal("0")
     return Decimal(str(paycheck["amount"])).quantize(CENT) if paycheck else Decimal("0")
@@ -131,7 +128,7 @@ def bank_profiles() -> list[dict]:
             account = nessie.pick_funding_account(customer["_id"])
             bills = normalise_bills(nessie.get_account_bills(account["_id"]))
             paycheck = paycheck_from_deposits(nessie.get_account_deposits(account["_id"]))
-        except Exception as exc:  # noqa: BLE001 - one broken customer should not hide the rest
+        except Exception as exc:  # noqa: BLE001
             log.warning("skipping Nessie customer %s: %s", customer.get("_id"), exc)
             continue
         rows.append(
@@ -174,7 +171,7 @@ def bank_for(session: dict) -> dict:
         if account_id:
             paycheck = paycheck_from_deposits(nessie.get_account_deposits(account_id))
             bank["employer"] = paycheck["employer"] if paycheck else None
-    except Exception as exc:  # noqa: BLE001 - a bank outage must not stop the clock
+    except Exception as exc:  # noqa: BLE001
         log.warning("Nessie profile unavailable for %s: %s", customer_id, exc)
     _bank_cache[session_id] = bank
     return bank
@@ -193,7 +190,7 @@ def bills_for(session: dict) -> list[dict]:
     if account_id:
         try:
             bills = normalise_bills(nessie.get_account_bills(account_id))
-        except Exception as exc:  # noqa: BLE001 - a bank outage must not stop the clock
+        except Exception as exc:  # noqa: BLE001
             log.warning("Nessie bills unavailable for %s: %s", account_id, exc)
     _bills_cache[session_id] = bills
     return bills
@@ -203,8 +200,6 @@ def forget(session_id: str) -> None:
     _bills_cache.pop(str(session_id), None)
     _bank_cache.pop(str(session_id), None)
 
-
-# --- the calendar ---------------------------------------------------------
 
 
 def _due_dates(day: int, after: date, through: date) -> list[date]:
@@ -264,8 +259,6 @@ def due_between(session: dict, after: date, through: date) -> list[dict]:
     flows.sort(key=lambda flow: (flow["due_date"], flow["kind"] != "salary", flow["label"]))
     return flows
 
-
-# --- settling up ----------------------------------------------------------
 
 
 def plan_sales(
@@ -369,6 +362,5 @@ def summary(session: dict, sim_date: date, ledger: list[dict]) -> dict:
         "net_monthly": round(monthly_income - monthly_bills, 2) if finances_enabled else 0,
         "upcoming": upcoming(session, sim_date) if finances_enabled else [],
         "overdrawn": cash < 0,
-        # How long the cash on hand lasts once the paycheck is netted off the bills.
         "months_of_runway": round(cash / net_burn, 1) if finances_enabled and net_burn > 0 else None,
     }

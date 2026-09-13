@@ -8,25 +8,15 @@ import pandas as pd
 from scripts.database import database
 from scripts.game import indicators
 
-# Bounded on purpose. A full-history frame is around eleven thousand rows and a megabyte,
-# and the catalog holds 108 symbols, so an unbounded cache would happily hold a hundred
-# megabytes of frames nobody is looking at.
 MAX_CACHED_TICKERS = 24
 
-# Tickers are warmed in parallel. The frames come from a database on the far side of the
-# network, so filling a ten-symbol session one round trip at a time was most of the time
-# it took to start a game.
 PREFETCH_WORKERS = 8
 
 _frames: "OrderedDict[str, pd.DataFrame]" = OrderedDict()
 _lock = threading.Lock()
-# One lock per ticker rather than one for the whole cache: the fetch happens inside it,
-# and a single lock would serialise every prefetch back into the slow path.
 _load_locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 
-# Wide enough for the oldest listing we can download, so "start as far back as possible"
-# is not silently clipped by this cache's own bounds.
 EPOCH_START = date(1800, 1, 1)
 EPOCH_END = date(2200, 1, 1)
 
@@ -44,8 +34,6 @@ def load(ticker: str) -> pd.DataFrame:
     cached = _frames.get(ticker)
     if cached is not None:
         with _lock:
-            # Re-checked because the lookup above is outside the lock: another thread can
-            # evict this ticker in between, and move_to_end on a missing key raises.
             if ticker in _frames:
                 _frames.move_to_end(ticker)
         return cached
@@ -61,11 +49,6 @@ def load(ticker: str) -> pd.DataFrame:
             while len(_frames) > MAX_CACHED_TICKERS:
                 _frames.popitem(last=False)
         return frame
-
-
-def is_cached(ticker: str) -> bool:
-    """Whether a frame is already held. A hint for prefetch, not a guarantee."""
-    return ticker.upper() in _frames
 
 
 def prefetch(tickers) -> None:

@@ -21,9 +21,6 @@ class MCPUnavailable(RuntimeError):
     pass
 
 
-# What the API surfaces to the player instead of a stack trace. Anything the MCP server
-# reports as an `error` is already a sentence meant for a human, so it is passed through
-# with a hint about where to fix it.
 NO_KEY_HINT = "No Gemini API key is configured, so the AI coach is switched off."
 KEY_FIX_HINT = "Add GEMINI_API_KEY to hackrice/.env (see .env.example) and restart the app."
 
@@ -85,7 +82,6 @@ class MCPClientThread:
         try:
             result = future.result(timeout=CALL_TIMEOUT_SECONDS)
         except Exception:
-            # Transport-level failure means the subprocess is gone; let the next call respawn it.
             self.alive = False
             raise
         if result.is_error:
@@ -98,12 +94,11 @@ class MCPClientThread:
         was_alive, self.alive = self.alive, False
         if self._loop is None or self._stack is None:
             return
-        # A dead subprocess never finishes aclose(), so skip it and just drop the loop.
         if graceful and was_alive:
             try:
                 asyncio.run_coroutine_threadsafe(self._stack.aclose(), self._loop).result(timeout=5)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                log.debug("MCP client did not close cleanly: %s", exc)
         self._loop.call_soon_threadsafe(self._loop.stop)
 
 
@@ -134,14 +129,6 @@ def get_client() -> MCPClientThread:
                 _client = candidate
                 atexit.register(candidate.shutdown)
     return _client
-
-
-def is_available() -> bool:
-    try:
-        get_client()
-        return True
-    except Exception:
-        return False
 
 
 def _call_and_log(tool: str, event_type: str, session_id: str, ticker: str, as_of: date):

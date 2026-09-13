@@ -30,17 +30,10 @@ from scripts.game import indicators
 TRADING_DAYS_PER_YEAR = 252
 SEED_MAX = 2**63 - 1
 
-# Volatility and drift are estimated from real history when we have it; these are the
-# fallbacks for a series too short to measure, and the bounds that keep an outlier
-# estimate from producing an absurd chart.
 MIN_ESTIMATE_DAYS = 30
 VOLATILITY_FLOOR = 0.006
 VOLATILITY_CEILING = 0.09
 
-# Drift is measured from the real series but capped in annual terms, expressed here as
-# log drift per session. A stock that tripled last year should not be handed a future
-# that triple again by construction - that is a lesson about mean reversion, not a
-# free compounding machine.
 ANNUAL_DRIFT_CEILING = 0.30
 ANNUAL_DRIFT_FLOOR = -0.20
 DRIFT_CEILING = math.log(1 + ANNUAL_DRIFT_CEILING) / TRADING_DAYS_PER_YEAR
@@ -50,15 +43,6 @@ _EXTENSION_CHUNK = 252
 
 _lock = threading.Lock()
 
-# --- frame cache ----------------------------------------------------------
-#
-# Building a symbol's frame means reading its stored bars back out of the database,
-# splicing them onto the real history and recomputing every indicator across the result.
-# One clock tick used to do that four times over for each symbol - asking for the same
-# numbers for the candles, the calendar and the chart - and against a database on the far
-# side of the network the reads alone were most of a second per tick. A frame is a pure
-# function of (session, ticker, that session's config), so it is built once and kept until
-# something actually writes to the future: a shock, a longer horizon, or a new fork.
 MAX_CACHED_FRAMES = 64
 
 _bars_cache: "OrderedDict[tuple[str, str], pd.DataFrame]" = OrderedDict()
@@ -213,8 +197,6 @@ def generate_bars(config_: SimulationConfig, base_volume: float | None = None) -
 
         rng = _rng(config_, index)
         shock = rng.gauss(0.0, 1.0)
-        # Momentum plus a pull back toward the drift trend line: pure GBM wanders far
-        # enough over a year that charts stop looking like a stock.
         trend_level = log_anchor + daily_mu * step
         reversion = kappa * (trend_level - math.log(previous_close))
         log_return = (daily_mu - 0.5 * daily_sigma**2) + daily_sigma * shock + reversion
@@ -227,7 +209,6 @@ def generate_bars(config_: SimulationConfig, base_volume: float | None = None) -
         high = max(open_, close) * (1 + intraday)
         low = min(open_, close) * (1 - intraday)
 
-        # Volume clusters with the size of the move, which is what makes spikes readable.
         volume_multiplier = math.exp(rng.gauss(0.0, 0.25) + 8 * abs(log_return))
         volume = max(1, int(base_volume * volume_multiplier))
 
@@ -277,7 +258,6 @@ def ensure_future(session_id: str, config_: SimulationConfig) -> int:
         written = database.upsert_simulated_prices(session_id, config_.ticker, new_rows)
         if bars:
             database.update_simulation(session_id, config_.ticker, last_generated=bars[-1][0])
-        # New bars exist now, so every frame built from the old ones is stale.
         invalidate(session_id, config_.ticker)
         return written
 
@@ -364,7 +344,6 @@ def apply_shock(
     impact = max(-0.9, min(0.9, float(sentiment) * float(magnitude) * config.SHOCK_IMPACT_SCALE))
     if abs(impact) < 1e-6:
         return 0
-    # Every cached frame for this symbol came from the pre-shock candles.
     invalidate(session_id, config_.ticker)
     decay_days = max(1, int(decay_days))
 
@@ -383,7 +362,6 @@ def apply_shock(
         cumulative += step
         multiplier = 1 + cumulative
 
-        # The day the story breaks trades heavy; the extra volume fades with the news.
         volume_multiplier = 1 + (1.2 if position == 0 else 0.5 * math.exp(-position / decay_days)) * abs(impact) * 3
         updates.append(
             (
@@ -398,8 +376,6 @@ def apply_shock(
         )
 
     written = database.rescale_simulated_prices(session_id, config_.ticker, updates)
-    # Again on the way out: a rebuild that slipped in between the two invalidations would
-    # have cached the pre-shock candles.
     invalidate(session_id, config_.ticker)
     return written
 

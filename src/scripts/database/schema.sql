@@ -11,11 +11,6 @@ CREATE TABLE IF NOT EXISTS stock_prices (
     PRIMARY KEY (ticker, ts)
 );
 
--- Chunk interval is set explicitly and generously on purpose. Daily bars for a handful
--- of symbols span decades: at the seven-day default, full history across the catalog
--- produced 3,377 chunks, and every query that could not prune by date ran out of memory
--- in the planner (dropping the table needed a lock per chunk, which the instance refused).
--- Ten-year chunks put the same data in seven.
 SELECT create_hypertable(
     'stock_prices', 'ts',
     chunk_time_interval => INTERVAL '10 years',
@@ -23,13 +18,10 @@ SELECT create_hypertable(
     migrate_data => TRUE
 );
 
--- Heals a database created before the above: only affects chunks created from now on.
 SELECT set_chunk_time_interval('stock_prices', INTERVAL '10 years');
 
 CREATE INDEX IF NOT EXISTS idx_stock_prices_ticker_ts ON stock_prices (ticker, ts DESC);
 
--- A session is a portfolio run over a watchlist of symbols, not a single ticker -
--- which symbol a session holds lives in session_tickers below.
 CREATE TABLE IF NOT EXISTS game_sessions (
     id                  UUID PRIMARY KEY,
     user_label          TEXT NOT NULL DEFAULT 'anonymous',
@@ -49,8 +41,6 @@ ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS finances_enabled BOOLEAN NOT 
 ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS level SMALLINT;
 
 
--- The symbols a player chose to trade. sort_order preserves pick order so the first
--- one picked is the default chart focus.
 CREATE TABLE IF NOT EXISTS session_tickers (
     session_id  UUID NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
     ticker      TEXT NOT NULL,
@@ -59,8 +49,6 @@ CREATE TABLE IF NOT EXISTS session_tickers (
     PRIMARY KEY (session_id, ticker)
 );
 
--- Sessions used to carry a single `ticker`. Move those into the watchlist, then drop
--- the column. Guarded so re-running this file after the drop is a no-op.
 DO $$
 BEGIN
     IF EXISTS (
@@ -97,7 +85,6 @@ CREATE TABLE IF NOT EXISTS transactions (
 
 CREATE INDEX IF NOT EXISTS idx_transactions_session ON transactions (session_id, trade_date);
 
--- Composite PK: a hypertable's partitioning column must be part of the primary key.
 CREATE TABLE IF NOT EXISTS mcp_events (
     id          BIGSERIAL,
     session_id  UUID NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
@@ -109,8 +96,6 @@ CREATE TABLE IF NOT EXISTS mcp_events (
     PRIMARY KEY (id, created_at)
 );
 
--- Existing deployments were created before MARKET_SHOCK and PATTERN_LESSON existed, and
--- CREATE TABLE IF NOT EXISTS will not widen their check constraint for them.
 ALTER TABLE mcp_events DROP CONSTRAINT IF EXISTS mcp_events_event_type_check;
 ALTER TABLE mcp_events ADD CONSTRAINT mcp_events_event_type_check
     CHECK (event_type IN ('PREDICTION','NEWS_EVENT','MARKET_SHOCK','PATTERN_LESSON'));
@@ -125,13 +110,7 @@ SELECT create_hypertable(
 CREATE INDEX IF NOT EXISTS idx_mcp_events_session ON mcp_events (session_id, created_at DESC);
 
 
--- ---------------------------------------------------------------------------
--- Ticker universe
--- ---------------------------------------------------------------------------
 
--- The catalog of symbols the game knows about, independent of whether we have
--- downloaded history for them yet. Seeded from scripts/ingestion/universes.py;
--- stock_prices only ever holds rows for symbols we actually ingested.
 CREATE TABLE IF NOT EXISTS tickers (
     ticker        TEXT PRIMARY KEY,
     company_name  TEXT NOT NULL,
@@ -146,19 +125,11 @@ CREATE INDEX IF NOT EXISTS idx_tickers_universe ON tickers (universe, ticker);
 CREATE INDEX IF NOT EXISTS idx_tickers_tech ON tickers (is_tech) WHERE is_tech;
 
 
--- ---------------------------------------------------------------------------
--- Per-user simulated future
--- ---------------------------------------------------------------------------
 
--- One row per session that has forked off the end of real history. Everything in
--- here belongs to a single player's session and is never written back into
--- stock_prices, so the shared, real dataset stays trustworthy for every player.
 CREATE TABLE IF NOT EXISTS user_simulations (
     session_id      UUID NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
     ticker          TEXT NOT NULL,
     fork_date       DATE NOT NULL,
-    -- The real close we roll forward from; stored so re-ingesting history can never
-    -- silently change a future that a player has already been trading in.
     anchor_price    NUMERIC(14,4) NOT NULL,
     horizon_days    INTEGER NOT NULL DEFAULT 252 CHECK (horizon_days > 0),
     drift           NUMERIC(10,6) NOT NULL DEFAULT 0,
@@ -169,18 +140,13 @@ CREATE TABLE IF NOT EXISTS user_simulations (
     last_generated  DATE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- One future per symbol: a session watches several tickers and each one forks on
-    -- its own, so the key has to include the ticker.
     PRIMARY KEY (session_id, ticker)
 );
 
--- Earlier versions keyed this table on session_id alone.
 ALTER TABLE user_simulations DROP CONSTRAINT IF EXISTS user_simulations_pkey;
 ALTER TABLE user_simulations ADD CONSTRAINT user_simulations_pkey
     PRIMARY KEY (session_id, ticker);
 
--- Deliberately not a hypertable: a session's future is a few hundred cheap rows
--- read by primary key, and the composite PK below is what we actually query on.
 CREATE TABLE IF NOT EXISTS simulated_prices (
     session_id  UUID NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
     ticker      TEXT NOT NULL,
@@ -190,7 +156,6 @@ CREATE TABLE IF NOT EXISTS simulated_prices (
     low         NUMERIC(14,4) NOT NULL,
     close       NUMERIC(14,4) NOT NULL,
     volume      BIGINT NOT NULL,
-    -- Set when a Gemini shock bent this bar, so a headline can be traced to its candles.
     event_id    BIGINT,
     PRIMARY KEY (session_id, ticker, ts)
 );
@@ -198,9 +163,6 @@ CREATE TABLE IF NOT EXISTS simulated_prices (
 CREATE INDEX IF NOT EXISTS idx_simulated_prices_session
     ON simulated_prices (session_id, ticker, ts);
 
--- Standing orders pulled from the player's Nessie account, charged as the clock passes
--- their day of the month. The unique key is what makes a tick idempotent: re-advancing
--- over a day that already charged rent must not charge it twice.
 CREATE TABLE IF NOT EXISTS session_expenses (
     id          BIGSERIAL PRIMARY KEY,
     session_id  UUID NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
@@ -217,18 +179,14 @@ CREATE TABLE IF NOT EXISTS session_expenses (
 CREATE INDEX IF NOT EXISTS idx_session_expenses_session
     ON session_expenses (session_id, due_date);
 
--- Paychecks share the bills' ledger so the running balance stays in date order. `amount` is
--- what actually moved; `shortfall` is what a bill still owed after selling everything.
 ALTER TABLE session_expenses ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'bill';
 ALTER TABLE session_expenses ADD COLUMN IF NOT EXISTS shortfall NUMERIC(14,2) NOT NULL DEFAULT 0;
 ALTER TABLE session_expenses DROP CONSTRAINT IF EXISTS session_expenses_kind_check;
 ALTER TABLE session_expenses ADD CONSTRAINT session_expenses_kind_check
     CHECK (kind IN ('bill', 'salary'));
 
--- The paycheck chosen on the start page, paid every two weeks; 0 means no salary.
 ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS salary_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
 
--- Shares the bank sold to cover a bill the cash could not.
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS forced BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS dividend NUMERIC(14,6) NOT NULL DEFAULT 0;
 
@@ -247,17 +205,9 @@ CREATE TABLE IF NOT EXISTS dividend_payments (
 CREATE INDEX IF NOT EXISTS idx_dividend_payments_session
     ON dividend_payments (session_id, ex_date);
 
--- Dividends can be taken as cash or rolled straight back into the shares that paid them.
--- The choice sits on the session because it changes what a tick does, not just how the
--- page draws it: one credits cash, the other buys stock.
 ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS reinvest_dividends BOOLEAN NOT NULL DEFAULT FALSE;
 
--- A reinvested dividend is a purchase, so it belongs in the trade ledger beside every
--- other one - otherwise the position and the ledger disagree about how many shares the
--- player owns, and the next dividend would be paid on a number that was never bought.
--- Flagged so the page can label it as the payout it is rather than a trade the player made.
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS reinvested BOOLEAN NOT NULL DEFAULT FALSE;
 
--- What a reinvestment bought, so the payment row still explains itself after the fact.
 ALTER TABLE dividend_payments ADD COLUMN IF NOT EXISTS reinvested_shares NUMERIC(18,6) NOT NULL DEFAULT 0;
 ALTER TABLE dividend_payments ADD COLUMN IF NOT EXISTS reinvest_price NUMERIC(14,4);

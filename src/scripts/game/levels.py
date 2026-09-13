@@ -245,8 +245,6 @@ def filter_patterns(level: Level | None, rows: list[dict]) -> list[dict]:
     return rows if level is None else [row for row in rows if row["slug"] in level.patterns]
 
 
-# --- rules ----------------------------------------------------------------
-
 
 def setups(frame: pd.DataFrame) -> pd.DataFrame:
     """Per bar, whether each rule would call it a buy or a sell."""
@@ -330,15 +328,13 @@ def _review(level: Level, frame: pd.DataFrame, side: str) -> tuple[bool, str]:
     return bool(matched), why
 
 
-# --- picking a stretch of history -----------------------------------------
-
 
 def _sector_of(tickers: list[str]) -> dict[str, str]:
     missing = [ticker for ticker in tickers if ticker not in _sectors]
     if missing:
         try:
             found = database.ticker_sectors(missing)
-        except Exception:  # noqa: BLE001 - a missing catalog just means every stock is "Other"
+        except Exception:  # noqa: BLE001
             found = {}
         for ticker in missing:
             _sectors[ticker] = (found.get(ticker) or {}).get("sector") or "Other"
@@ -453,8 +449,6 @@ def plan(number: int, rng: random.Random) -> tuple[list[str], date, date]:
         return _plan_single(level, rng)
     return _plan_basket(level, rng)
 
-
-# --- grading --------------------------------------------------------------
 
 
 def _as_date(value) -> date:

@@ -14,7 +14,6 @@ from datetime import date, datetime, timedelta
 
 from scripts.game import price_source
 
-# Enough to see a trend on screen without turning the payload into a spreadsheet.
 DEFAULT_BASKET_WINDOW = 180
 MAX_BASKET_WINDOW = 1000
 
@@ -108,10 +107,6 @@ def equity_curve(
     for trade in ordered:
         by_date.setdefault(_iso(trade["trade_date"]), []).append(trade)
 
-    # Bills fall on calendar days, and the curve is drawn on trading days. Keying charges
-    # by date and looking each day up would silently drop every bill that landed on a
-    # weekend, so they are drained in date order onto the first plotted day at or after
-    # them instead.
     charges = sorted(
         (
             (_iso(row["due_date"]), float(row["amount"]) * (1 if row.get("kind") == "salary" else -1))
@@ -140,7 +135,6 @@ def equity_curve(
                 holds[ticker] = holds.get(ticker, 0.0) - shares
                 cash += shares * price
 
-    # Everything that happened before the window still counts toward what is held today.
     for day in sorted(by_date):
         if day < dates[0]:
             settle(day)
@@ -191,9 +185,6 @@ def basket(
         tail = frame.tail(window)
         frames[ticker] = tail
         dates.update(row.isoformat() for row in tail["ts"])
-        # Whether the bars on screen include invented ones. A forked session is still
-        # showing real history until its window reaches the fork, and labelling those bars
-        # "simulated" would be wrong.
         fork = getattr(getattr(source, "config", None), "fork_date", None)
         series.append(
             {
@@ -208,12 +199,6 @@ def basket(
     axis = sorted(dates)
     series.sort(key=lambda row: (row["change_pct"] is None, -(row["change_pct"] or 0)))
 
-    # The equity and basket panels share one axis, and it grows with the symbols' own
-    # history: a session whose names have only a few weeks of bars plots a line that is
-    # still filling up. Same fix as the price chart's - tell the page how many slots the
-    # axis will ever need, so it does not have to re-space the plot every tick. The union
-    # of several calendars is at most as long as the longest of them, so the longest is
-    # the answer here; a name that trades on days another does not can only widen it.
     end_date = _as_date(session["end_date"])
     capacity = max(
         (price_source.bars_through(source, end_date) for source in sources.values()),

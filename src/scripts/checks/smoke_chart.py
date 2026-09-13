@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.database import database
-from scripts.game import engine, performance, price_cache, price_source
+from scripts.game import engine, performance, price_cache
 
 UI_BASE = "http://127.0.0.1:5000"
 WINDOW = engine.DEFAULT_CHART_WINDOW
@@ -46,8 +46,6 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
     print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  [{detail}]" if detail else ""))
     return ok
 
-
-# --- fixtures -------------------------------------------------------------
 
 
 def history(ticker: str) -> tuple[date, date, int]:
@@ -90,13 +88,9 @@ def clean_up(session_ids: list[str]) -> None:
     print(f"\ncleaned up {len(session_ids)} smoke session(s)")
 
 
-# --- the width is the session's whole life --------------------------------
-
 
 def test_filling_up(ticker: str, first_day: date) -> list[str]:
     """A run that starts on the symbol's first day charts every bar it will ever have."""
-    # Short enough that the whole run is charted from the first draw, but long enough that
-    # the window would have been growing slot by slot for the entire session.
     end_date = first_day + timedelta(days=40)
     print(f"\nstill filling up: {ticker} {first_day.isoformat()} -> {end_date.isoformat()}")
     sid, state = start(ticker, first_day, end_date)
@@ -212,8 +206,6 @@ def test_basket(ticker: str, first_day: date) -> list[str]:
     return sessions
 
 
-# --- over the wire --------------------------------------------------------
-
 
 def get_json(path: str) -> tuple[int, dict]:
     try:
@@ -248,8 +240,6 @@ def test_api(session_id: str) -> None:
     )
 
 
-# --- entry point ----------------------------------------------------------
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Smoke test the chart's x-axis width.")
@@ -261,8 +251,6 @@ def main() -> int:
     first_day, last_day, rows = history(ticker)
     print(f"smoke test: chart width on {ticker}, {rows} bars from {first_day.isoformat()}")
 
-    # A session with a window's worth of history behind it: the rolling case, which the
-    # fixed width must not disturb.
     rolling_start = first_day + timedelta(days=1200)
 
     sessions: list[str] = []

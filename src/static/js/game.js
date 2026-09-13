@@ -1,7 +1,5 @@
 const sessionId = document.body.dataset.sessionId;
 
-// Past 2x the browser batches days per request instead of ticking faster, because a
-// round trip to the cloud database costs more than the interval would allow.
 const SPEEDS = [
     { label: '0.5x · 1 day/2s', ms: 2000, days: 1 },
     { label: '1x · 1 day/sec', ms: 1000, days: 1 },
@@ -25,9 +23,6 @@ const signed = (value, digits = 2) => value == null ? '—' : `${value >= 0 ? '+
 const pct = (value) => value == null ? '—' : `${signed(value)}%`;
 const toneFor = (value) => value == null ? 'text-muted' : value > 0 ? 'text-up' : value < 0 ? 'text-down' : 'text-muted';
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-// Reinvested dividends buy fractions of a share, so a position rendered with a plain
-// integer would round real holdings away. Whole numbers stay clean; the rest keep enough
-// digits to show the position actually grew.
 const formatShares = (value) => {
     const shares = Number(value) || 0;
     const whole = Math.abs(shares - Math.round(shares)) < 0.0005;
@@ -37,8 +32,6 @@ const formatShares = (value) => {
     });
 };
 
-// The Play button is the one control that changes colour while running, so both of its
-// states live here rather than being assembled out of string surgery in play()/pause().
 const PRIMARY = 'rounded-full bg-brand px-8 py-3 text-lg font-semibold transition hover:bg-brand-soft';
 const PLAYING = 'rounded-full bg-accent px-8 py-3 text-lg font-semibold text-ink transition hover:bg-accent-soft';
 
@@ -48,7 +41,6 @@ let latestState = null;
 let latestSimulation = null;
 let focus = null;
 let companyNames = {};
-// The full catalog rows, not just the names: the hover card needs the sector and the blurb.
 let companyInfo = {};
 const BASKET_REFRESH_MS = 500;
 let basketTimer = null;
@@ -56,20 +48,12 @@ let basketInFlight = false;
 let basketQueued = false;
 let basketSignature = null;
 
-// AI work lands off the tick that queued it, so a paused clock has to go and collect it.
-// A running clock does not: the next advance response already carries the whole feed.
 const FEED_REFRESH_MS = 5000;
 let feedTimer = null;
 
-// Teacher mode: the lesson a tick queues arrives seconds later on a worker thread, so the
-// page stops the clock immediately, opens the card in a waiting state, and polls until the
-// lesson lands. `shownLessons` stops a lesson already taught from re-opening every time the
-// feed is re-rendered.
 const TEACHER_KEY = 'tradingTeacher.teacherMode';
 const TOUR_KEY = 'tradingTeacher.tourDone';
 const LESSON_POLL_MS = 1200;
-// Past this the lesson is almost certainly not coming (no key, dead subprocess, Gemini
-// rate-limited). The player is let go rather than left staring at a spinner.
 const LESSON_WAIT_MS = 30000;
 let teacherMode = true;
 let awaitingLesson = null;
@@ -77,8 +61,6 @@ let lessonPollTimer = null;
 let lessonWaitStarted = 0;
 const shownLessons = new Set();
 
-// Signals live behind a drawer, so the page has to remember how many have arrived and how
-// many of those the player has actually looked at.
 let signalsOpen = false;
 let signalTotal = 0;
 let signalUnread = 0;
@@ -94,7 +76,6 @@ async function call(path, options = {}) {
     return data;
 }
 
-// --- rendering ------------------------------------------------------------
 
 function held(position) {
     return latestState?.portfolio?.positions?.find((row) => row.ticker === position);
@@ -108,8 +89,6 @@ function renderWatchlist(state) {
         const position = held(quote.ticker);
         const button = document.createElement('button');
         button.type = 'button';
-        // Outlined by default, blue only for the focused symbol: the same treatment the
-        // mock gives its list rows.
         button.className = `flex items-center gap-4 rounded-2xl border px-5 py-3 text-left transition ${
             active ? 'border-brand bg-brand/10' : 'border-line-strong bg-transparent hover:border-muted'}`;
         button.innerHTML = `
@@ -177,8 +156,6 @@ function renderHoldings(state) {
                 <button type="button" data-side="SELL" class="row-trade rounded-lg border border-line py-1 text-xs text-muted transition hover:border-down/60 hover:text-down">Sell</button>
             </div>`;
         row.querySelector('.focus-chip').addEventListener('click', () => setFocus(position.ticker));
-        // Trading straight from a holding is the point of a multi-position panel: the
-        // form's symbol dropdown is one more thing to get wrong before you can act.
         for (const button of row.querySelectorAll('.row-trade')) {
             button.addEventListener('click', () => trade(button.dataset.side, position.ticker));
         }
@@ -192,8 +169,6 @@ function renderBills(state) {
 
     const overdrawn = state.portfolio.overdrawn;
     el('overdrawn-banner').classList.toggle('hidden', !overdrawn);
-    // Only the tone classes are swapped. Assigning className would wipe the `hidden` a level
-    // puts on a panel it is not teaching, since both write to the same attribute.
     const panel = el('bills-panel');
     panel.classList.toggle('border-down/50', overdrawn);
     panel.classList.toggle('bg-down/5', overdrawn);
@@ -201,8 +176,6 @@ function renderBills(state) {
     panel.classList.toggle('bg-surface', !overdrawn);
 
     const runway = el('bills-runway');
-    // Months of runway is the number that should change how much gets invested, so it is
-    // coloured like a warning long before the balance actually goes red.
     const months = bills.months_of_runway;
     runway.textContent = months == null ? (bills.paycheck && bills.bill_count ? 'paycheck covers bills' : 'no bills')
         : months < 0 ? 'overdrawn'
@@ -246,8 +219,6 @@ function renderBills(state) {
     const dividends = state.dividends_paid || 0;
     el('dividends-paid').textContent = money(dividends);
 
-    // What is coming. A holding with no declaration is listed too: "nothing scheduled" is
-    // the answer a player needs when they are deciding whether to hold through an ex-date.
     const schedule = state.dividend_schedule || [];
     const shown = schedule.filter((row) => row.ex_date).slice(0, 6);
     const quiet = schedule.length - shown.length;
@@ -287,8 +258,6 @@ function renderBills(state) {
         }).join('')
         : '<p class="text-dim">No dividends received yet. Hold a dividend-paying stock through its ex-date.</p>';
 
-    // The box is a mirror of the session, not a local preference: render sets it, and the
-    // request is what changes it.
     el('reinvest-toggle').checked = Boolean(state.reinvest_dividends);
 }
 
@@ -324,21 +293,17 @@ function renderBank(state) {
 let newsSignature = null;
 let newsStories = [];
 
-// Seconds of drift per headline. Per story, not for the whole strip, so the headlines move
-// at the same readable pace whether the run is a week old or a decade.
 const NEWSWIRE_SECONDS_PER_STORY = 6;
 const NEWSWIRE_MIN_SECONDS = 45;
-// A frame that arrives long after the last one - a backgrounded tab, a stalled main thread -
-// would otherwise advance the strip by everything it missed in a single leap.
 const NEWSWIRE_MAX_FRAME_SECONDS = 0.1;
 
-let newsOffset = 0;      // how far the strip has drifted, in px
-let newsPitch = 0;       // one full pass of the headlines plus the gap that follows it, in px
-let newsSpeed = 0;       // px per second
+let newsOffset = 0;
+let newsPitch = 0;
+let newsSpeed = 0;
 let newsRaf = null;
 let newsFrameTime = 0;
 let newsHovered = false;
-let newsIds = [];        // old -> new, exactly what the DOM is holding
+let newsIds = [];
 
 const newsTrack = () => el('news-track');
 const newsRuns = () => [...newsTrack().children]
@@ -353,16 +318,8 @@ function newsGap() {
 
 const newsRunWidth = () => newsRuns()[0]?.getBoundingClientRect().width || 0;
 
-// Held under the pointer, or while a story is open, the strip stops: a headline nobody can
-// click is just decoration.
 const newsPaused = () => newsHovered || newsOpen() || newsReducedMotion();
 
-// The drift is driven here rather than by a CSS animation. A keyframe animation is a function
-// of wall-clock time against a track of a fixed length, so the moment a headline arrives the
-// strip changes length, the timing is re-solved and whatever is on screen snaps sideways -
-// the jump that reads as "the newswire refreshed". The scroll offset is state this script
-// owns instead, so a new headline is written past the right edge while everything already on
-// screen keeps its place.
 function newsDrift(now) {
     newsRaf = requestAnimationFrame(newsDrift);
     const elapsed = newsFrameTime
@@ -380,8 +337,6 @@ function startNewsDrift() {
     newsRaf = requestAnimationFrame(newsDrift);
 }
 
-// Everything downstream of a change to the strip: how far one full pass travels, and how fast
-// that pass should run to keep the pace at a readable number of seconds per headline.
 function measureNews() {
     newsPitch = newsRunWidth() + newsGap();
     newsSpeed = newsPitch
@@ -393,9 +348,6 @@ function measureNews() {
 }
 
 function storyChip(story, decorative = false) {
-    // The repeat passes through the list are decoration: they are what makes the drift look
-    // endless instead of snapping back to the start, so they are hidden from the keyboard and
-    // the AT.
     const holder = document.createElement('div');
     holder.innerHTML = `<button type="button" data-story="${esc(story.id)}"
         class="news-chip flex shrink-0 items-center gap-3 rounded-2xl border border-line bg-ink-soft px-4 py-2 text-left transition hover:border-brand hover:bg-brand/10">
@@ -411,10 +363,6 @@ function storyChip(story, decorative = false) {
     return chip;
 }
 
-// One pass through the headlines, repeated as many times as the strip is wide, so the wrap
-// never shows a gap - which is the whole reason the seams are invisible. The pass runs oldest
-// to newest, so the strip drifts into the newest headlines and a story that leaves the window
-// drops off the end the drift has already passed.
 function buildNewsRuns(stories) {
     const track = newsTrack();
     track.innerHTML = '';
@@ -438,8 +386,6 @@ function buildNewsRuns(stories) {
     }
 
     newsIds = ordered.map((story) => story.id);
-    // Start at the newest end of the pass, so a strip opened on a long session shows today's
-    // headlines rather than a month of history before them.
     newsOffset = Math.max(0, pitch - width);
     measureNews();
 }
@@ -461,10 +407,6 @@ function renderNews(state) {
         return;
     }
 
-    // The window only ages out from the old end, and the strip is rendered oldest first, so a
-    // headline that leaves it is always one of the leading chips: the strip can let it go
-    // without disturbing anything the player can see. Anything else (a restart, a different
-    // session) is a genuinely different strip and gets rebuilt.
     const wanted = new Set(ids);
     const departed = newsIds.filter((id) => !wanted.has(id));
     const agesOut = departed.length < newsIds.length
@@ -475,7 +417,6 @@ function renderNews(state) {
     }
 
     const known = new Set(newsIds);
-    // The state arrives newest first; arrivals go on the end in the order they happened.
     const arrivals = stories.filter((story) => !known.has(story.id)).reverse();
 
     const runs = newsRuns();
@@ -483,8 +424,6 @@ function renderNews(state) {
     for (const run of runs) {
         for (let i = 0; i < departed.length; i += 1) run.firstElementChild?.remove();
     }
-    // Dropping chips shortens the pass, so the offset has to give up the same distance or the
-    // strip would jump backwards by exactly the width it just released.
     const widthAfter = newsRunWidth();
     newsPitch = widthAfter + newsGap();
     if (newsPitch) {
@@ -497,16 +436,11 @@ function renderNews(state) {
     }
     newsIds = newsIds.slice(departed.length).concat(arrivals.map((story) => story.id));
     measureNews();
-    // Losing headlines shortens the pass, and a strip too short to cover the window would
-    // show its own tail: only then is it worth paying for a rebuild.
     const viewport = el('news-viewport').clientWidth;
     if ((runs.length - 1) * newsPitch < viewport) buildNewsRuns(stories);
 }
 
-// --- the daily ledger -----------------------------------------------------
 
-// Clicking the newswire stops the clock and opens the whole paper: the point of a newswire
-// is that you can read it, and reading while six more days go by is not reading.
 let newsEdition = null;
 
 const utcDate = (iso, options) => new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', ...options });
@@ -613,8 +547,6 @@ function renderBasketNote(payload) {
 function render(state) {
     latestState = state;
     focus = state.focus;
-    // Runs once per session: a level switches off the panels it is not teaching before
-    // anything is drawn, so the first paint already has the right ones showing.
     applyLevel(state);
     el('sim-date').textContent = state.sim_date;
 
@@ -625,7 +557,6 @@ function render(state) {
 
     el('focus-label').textContent = state.focus;
     el('focus-name').textContent = companyNames[state.focus] || '';
-    // The hint names whichever symbol the price chart is showing, so it follows the focus.
     if (priceHint) priceHint.setAttribute('aria-label', `Show the ${state.focus} price chart large`);
 
     const quote = state.quotes.find((row) => row.ticker === state.focus) || {};
@@ -670,7 +601,6 @@ function renderFeed(feed) {
     }
 }
 
-// --- pattern school -------------------------------------------------------
 
 const FAMILY_TONE = {
     trend: 'border-brand/50 bg-brand/10 text-brand-soft',
@@ -683,7 +613,6 @@ function renderPatterns(rows) {
     const list = el('pattern-list');
     const learned = rows.filter((row) => row.taught);
     el('pattern-progress').textContent = `${learned.length} of ${rows.length} learned`;
-    // The next unlearned pattern is the one to be looking for, so it is called out.
     const next = rows.find((row) => !row.taught);
 
     list.innerHTML = '';
@@ -722,8 +651,6 @@ function lessonCard(entry) {
     const steps = e.how_to_spot || [];
     const node = document.createElement('div');
     node.className = `rounded-xl border ${tone.split(' ')[0] || 'border-line'} bg-ink-soft p-4`;
-    // The numbers the lesson was written against, so the card points at the chart on
-    // screen rather than describing the pattern in the abstract.
     const figures = [
         ['close', readings.close],
         ['RSI', readings.rsi14],
@@ -777,10 +704,6 @@ function shockCard(entry) {
     const border = bullish ? 'border-up/50 bg-up/10'
         : bearish ? 'border-down/50 bg-down/10' : 'border-line bg-ink-soft';
     const scope = (e.scope || 'ticker').toLowerCase();
-    // When a story is wider than one company, say so and name the names it hit: that is
-    // the whole teaching point of a sector event.
-    // The date a story broke lives on the feed entry; the payload carries it as `as_of`.
-    // Reading `payload.sim_date` printed "undefined" in the card header.
     const asOf = entry.sim_date || e.as_of || '';
     const label = scope === 'market'
         ? `Market-wide · ${asOf}`
@@ -851,7 +774,6 @@ function setStatus(text, active) {
     pill.className = `rounded-full border px-4 py-1.5 text-sm ${active ? 'border-accent/50 bg-accent/10 text-accent-soft' : 'border-line text-muted'}`;
 }
 
-// --- the signal drawer ----------------------------------------------------
 
 function setSignalsOpen(open) {
     signalsOpen = open;
@@ -860,7 +782,6 @@ function setSignalsOpen(open) {
     el('signal-backdrop').classList.toggle('hidden', !open);
     const tab = el('signals-toggle');
     tab.setAttribute('aria-expanded', String(open));
-    // The tab would otherwise sit underneath the panel it just opened.
     tab.classList.toggle('opacity-0', open);
     tab.classList.toggle('pointer-events-none', open);
     if (open) signalUnread = 0;
@@ -868,8 +789,6 @@ function setSignalsOpen(open) {
 }
 
 function updateSignalsBadge() {
-    // Closed, the badge counts what has not been read; open, it counts the session total,
-    // because the drawer itself is now the place to read them.
     const count = signalsOpen ? signalTotal : signalUnread;
     const unread = !signalsOpen && signalUnread > 0;
 
@@ -883,8 +802,6 @@ function updateSignalsBadge() {
     headerBadge.className = 'rounded-full bg-warn px-1.5 py-0.5 text-[11px] font-bold leading-none text-ink'
         + (count === 0 ? ' hidden' : '');
 
-    // The tab and the header button pulse while something in the log has not been read:
-    // the old tab was a grey sliver nobody noticed was there.
     for (const node of [el('signals-toggle'), el('signals-open-btn')]) {
         node.classList.toggle('signals-attention', unread);
     }
@@ -899,7 +816,6 @@ function updateSignalsBadge() {
         + `${symbols} symbol${symbols === 1 ? '' : 's'}.`;
 }
 
-// --- interaction ----------------------------------------------------------
 
 async function setFocus(ticker) {
     focus = ticker;
@@ -913,15 +829,12 @@ async function setFocus(ticker) {
 
 async function refreshBasket() {
     if (basketInFlight) {
-        // A running clock asks far more often than these charts change. Coalesce instead
-        // of stacking requests: one is already on its way with fresher numbers.
         basketQueued = true;
         return;
     }
     basketInFlight = true;
     try {
         const payload = await call(`/api/session/${sessionId}/basket`);
-        // Nothing moved since the last draw, so the charts would only be re-parsed.
         const signature = `${payload.sim_date}|${payload.equity?.length ?? 0}|`
             + payload.series.map((row) => `${row.ticker}:${row.last_close}:${row.points.length}`).join(',');
         if (signature === basketSignature) return;
@@ -944,9 +857,6 @@ async function refreshBasket() {
     }
 }
 
-// The basket and equity panels are read at a glance, not frame by frame, so a tick only
-// schedules them: at 10x the clock ticks ten times a second and redrawing both charts for
-// every one of those was most of the page's work.
 function scheduleBasket(delay = BASKET_REFRESH_MS) {
     if (basketTimer !== null) return;
     basketTimer = setTimeout(() => {
@@ -973,25 +883,13 @@ async function advance(days = 1) {
         });
         render(state);
         logSignals(state.signals || []);
-        // Same tick, not half a second behind it: the basket and equity panels used to land
-        // 500ms after the price chart, so a running clock looked like two separate redraws
-        // instead of one. The request itself is still coalesced inside refreshBasket, so a
-        // tick that arrives while one is in flight waits rather than stacking another.
         scheduleBasket(0);
-        // The lesson itself is still being written on a worker thread. Teacher mode stops
-        // the clock now, on the tick that queued it, so the player is not three days past
-        // the pattern by the time it can be explained.
         const lesson = (state.pending_ai || []).find((job) => job.kind === 'PATTERN_LESSON');
         if (teacherMode && lesson && !awaitingLesson) {
             pause();
             openCoach(lesson);
             return;
         }
-        // AI runs in the background, so its output lands after the tick that queued it.
-        // Nothing to poll for while the clock is running - the next advance already
-        // returns the updated feed - whereas the two timers this used to arm on every
-        // such tick were fetching the entire state twice per day advanced, and each of
-        // those re-rendered all five charts.
         if ((state.pending_ai || []).length && !timer) scheduleFeedRefresh();
     } catch (error) {
         console.error(error);
@@ -1005,8 +903,6 @@ async function refreshFeed() {
         const state = await call(`/api/session/${sessionId}/state?focus=${focus}`);
         if (state.ai_feed.length !== (latestState?.ai_feed.length ?? 0)) {
             renderFeed(state.ai_feed);
-            // A new event may well be the lesson that teaches the next pattern, and the
-            // panel is the visible half of the curriculum.
             renderPatterns(state.patterns);
             refreshSimulation();
             scheduleBasket(0);
@@ -1019,9 +915,6 @@ async function refreshFeed() {
 function play() {
     if (timer) return;
     const speed = SPEEDS[Number(el('speed').value)];
-    // Self-scheduling rather than setInterval: a tick that takes 400ms of a 1000ms budget
-    // waits the remaining 600ms, so "1 day/sec" means one day a second instead of drifting
-    // a whole extra second behind every time a request runs long.
     const tick = async () => {
         if (!timer) return;
         const started = performance.now();
@@ -1042,7 +935,6 @@ function pause() {
     el('play-btn').textContent = 'Play';
     el('play-btn').className = PRIMARY;
     setStatus('Paused', false);
-    // Collect whatever the background workers finished while the clock was running.
     scheduleFeedRefresh(0);
 }
 
@@ -1056,8 +948,6 @@ function finish(state) {
     el('summary-net').textContent = money(state.portfolio.net_worth);
     el('summary-start').textContent = money(state.portfolio.starting_cash);
 
-    // A level ending is graded rather than just totalled: the stars, the rule that was not
-    // met, and the trades it was judged on.
     const level = state.level;
     if (level) {
         recordLevel(level);
@@ -1092,8 +982,6 @@ function finish(state) {
     overlay.classList.add('flex');
 }
 
-// `explicitShares` is for callers that already know the size they want - "sell everything"
-// means the whole position, not however many happen to be typed in the quantity box.
 async function trade(side, ticker, explicitShares) {
     const errorBox = el('trade-error');
     errorBox.classList.add('hidden');
@@ -1111,7 +999,6 @@ async function trade(side, ticker, explicitShares) {
     }
 }
 
-// --- simulated future -----------------------------------------------------
 
 function showSimulation(info) {
     latestSimulation = info;
@@ -1145,12 +1032,11 @@ async function refreshSimulation() {
     }
 }
 
-// --- teacher mode ---------------------------------------------------------
 
 function setTeacherMode(on) {
     teacherMode = on;
     el('teacher-mode').checked = on;
-    try { localStorage.setItem(TEACHER_KEY, on ? '1' : '0'); } catch { /* private mode */ }
+    try { localStorage.setItem(TEACHER_KEY, on ? '1' : '0'); } catch {  }
 }
 
 function openCoach(job) {
@@ -1161,8 +1047,6 @@ function openCoach(job) {
     el('coach-family').textContent = 'analysing';
     el('coach-body').classList.add('hidden');
     el('coach-body').innerHTML = '';
-    // Rebuilt every time: coachGaveUp() overwrites this block, so a second lesson would
-    // otherwise open showing the previous one's failure message and no spinner.
     el('coach-loading').innerHTML = `
         <span class="h-5 w-5 animate-spin rounded-full border-2 border-line-strong border-t-accent"></span>
         <span class="text-sm text-muted">Reading your chart and writing the explanation&hellip;</span>`;
@@ -1243,13 +1127,9 @@ async function pollLesson() {
     } catch (error) {
         console.error(error);
     }
-    // renderFeed fills the card and clears awaitingLesson the moment the lesson lands.
     if (awaitingLesson) lessonPollTimer = setTimeout(pollLesson, LESSON_POLL_MS);
 }
 
-// Every lesson already on screen counts as taught, so only one that arrives while the
-// coach is waiting opens the card. Without this baseline, reloading a session would
-// re-teach every lesson it had ever been given.
 function noteLessons(feed) {
     const lessons = feed.filter((entry) => entry.type === 'PATTERN_LESSON');
     if (!awaitingLesson) {
@@ -1265,24 +1145,16 @@ function noteLessons(feed) {
     fillCoach(fresh);
 }
 
-// --- training levels ------------------------------------------------------
-//
-// A level is a short run over real history that hands the player one tool at a time. The
-// session carries the level, so the server decides what a level contains and this side only
-// decides how it looks: which panels are on, and how each trade scores against its rule.
 
 const LEVELS_KEY = 'tradingTeacher.levels';
 let levelApplied = false;
 
-// Which panels this run shows. A session with no level shows all of them.
 function shows(state, panel) {
     return !state?.level || state.level.panels.includes(panel);
 }
 
 const starText = (count) => '★'.repeat(count) + '☆'.repeat(Math.max(0, 3 - count));
 
-// A row of gated panels should not leave a hole in the grid once its siblings are hidden, so
-// a lone survivor is stretched across both columns.
 function balanceRow(row) {
     const visible = [...row.children].filter((child) => !child.classList.contains('hidden'));
     row.classList.toggle('hidden', visible.length === 0);
@@ -1301,7 +1173,6 @@ function applyLevel(state) {
         if (el(id)) balanceRow(el(id));
     }
     ensureVisibleHero();
-    // The price chart is always on screen; the level decides which overlays sit on it.
     if (charts.price && typeof setPriceOverlays === 'function') {
         setPriceOverlays(charts.price, {
             trend: shows(state, 'trend'),
@@ -1384,17 +1255,15 @@ function closeBrief(resume) {
     if (resume) play();
 }
 
-// Best result so far, per level, in the browser: the catalog on the setup page reads the same
-// key, so a level finished here shows its stars there and unlocks the next one.
 function recordLevel(level) {
     let progress = {};
-    try { progress = JSON.parse(localStorage.getItem(LEVELS_KEY) || '{}') || {}; } catch { /* private mode */ }
+    try { progress = JSON.parse(localStorage.getItem(LEVELS_KEY) || '{}') || {}; } catch {  }
     const best = progress[level.number] || {};
     progress[level.number] = {
         stars: Math.max(best.stars || 0, level.stars),
         passed: Boolean(best.passed || level.passed),
     };
-    try { localStorage.setItem(LEVELS_KEY, JSON.stringify(progress)); } catch { /* private mode */ }
+    try { localStorage.setItem(LEVELS_KEY, JSON.stringify(progress)); } catch {  }
 }
 
 async function startLevel(number, button) {
@@ -1411,11 +1280,6 @@ async function startLevel(number, button) {
     }
 }
 
-// --- stock hover card -----------------------------------------------------
-//
-// One floating card for every element tagged data-stock-tip. The watchlist and holdings are
-// rebuilt on every tick, so the card remembers which list its anchor lived in and re-attaches
-// to the fresh element for the same stock instead of pointing at one that is gone.
 const TIP_DELAY_MS = 150;
 let tipTimer = null;
 let tipAnchor = null;
@@ -1488,11 +1352,7 @@ document.addEventListener('focusout', hideStockTip);
 document.documentElement.addEventListener('mouseleave', hideStockTip);
 document.addEventListener('scroll', hideStockTip, { capture: true, passive: true });
 
-// --- foldable panels ------------------------------------------------------
 
-// The dashboard is ten panels deep and not all of them matter at once, so the ones a player
-// can live without fold shut. The header row stays exactly where it was, everything under it
-// moves into a body wrapper, and the choice is remembered per card.
 const COLLAPSE_KEY = 'tradingTeacher.collapsed';
 
 function collapsedNames() {
@@ -1509,13 +1369,9 @@ function rememberCollapsed(name, collapsed) {
     else names.delete(name);
     try {
         localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...names]));
-    } catch { /* private mode */ }
+    } catch {  }
 }
 
-// The side column is about 340px wide, and a title, a status pill, the grip and the fold
-// button on one row crushed the title onto two lines and pushed the button off the card. The
-// head is rebuilt as two lines instead: the title with its controls on top, and whatever
-// else the header held (badges, buttons, a note) wrapping underneath.
 function buildCardHead(card) {
     const first = card.firstElementChild;
     const heading = card.querySelector('h2');
@@ -1536,8 +1392,6 @@ function buildCardHead(card) {
         const extra = document.createElement('div');
         extra.className = 'card-head-extra mt-2 flex flex-wrap items-center gap-2';
         for (const node of [...first.children]) {
-            // A wrapper the heading was lifted out of can be left empty, but a badge the page
-            // fills in later has an id and is kept even while it has no text.
             if (node.id || node.children.length || node.textContent.trim()) extra.appendChild(node);
         }
         first.remove();
@@ -1550,7 +1404,6 @@ function setupCollapsibles() {
     const remembered = collapsedNames();
     for (const card of document.querySelectorAll('[data-collapse]')) {
         const name = card.dataset.collapse;
-        // Chart cards already lay their header out around a control cluster.
         const header = card.querySelector('[data-chart-controls]') ? card.firstElementChild : buildCardHead(card);
         if (!header) continue;
 
@@ -1564,8 +1417,6 @@ function setupCollapsibles() {
         toggle.className = 'collapse-toggle ml-auto flex shrink-0 items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-dim transition hover:border-muted hover:text-white';
         toggle.innerHTML = '<span class="collapse-label">Hide</span>'
             + '<svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5l4-4" /></svg>';
-        // Into the header's control cluster when the card has one, so the fold toggle and the
-        // enlarge hint stay a single group at the end of the row.
         (card.querySelector('[data-chart-controls], .card-controls') || header).appendChild(toggle);
 
         const setCollapsed = (collapsed) => {
@@ -1580,18 +1431,11 @@ function setupCollapsibles() {
             const collapsed = !card.classList.contains('card-collapsed');
             setCollapsed(collapsed);
             rememberCollapsed(name, collapsed);
-            // The plots size themselves from their container (Lightweight Charts runs its own
-            // ResizeObserver), so unfolding a card only has to let the box grow back.
         });
     }
 }
 
-// --- putting the cards in your own order ----------------------------------
 
-// Ten panels in a fixed order is one opinion about what matters; a player watching their
-// cash run out wants the bank up top and the pattern lessons out of the way. The cards can
-// be dragged into that order, and the arrangement is remembered per browser - the same way
-// the folded state of each card is.
 const ORDER_KEY = 'tradingTeacher.cardOrder';
 
 function gripButton(label) {
@@ -1608,7 +1452,6 @@ function gripButton(label) {
     return grip;
 }
 
-// Ahead of the fold button wherever that sits, so the two controls stay together.
 function placeGrip(card, grip, fallback) {
     const fold = card.querySelector('.collapse-toggle');
     (fold?.parentElement || fallback).insertBefore(grip, fold || null);
@@ -1627,7 +1470,7 @@ function rememberOrder(container) {
     try {
         const ids = [...container.children].map((card) => card.dataset.collapse).filter(Boolean);
         localStorage.setItem(ORDER_KEY, JSON.stringify(ids));
-    } catch { /* private mode */ }
+    } catch {  }
 }
 
 function applyStoredOrder(container) {
@@ -1636,9 +1479,6 @@ function applyStoredOrder(container) {
     const rank = new Map(order.map((id, index) => [id, index]));
     const cards = [...container.children];
     cards
-        // Anything the stored order has never seen keeps its place at the end, so a card
-        // added to the page later does not vanish just because a browser remembers an
-        // older arrangement.
         .sort((a, b) => (rank.get(a.dataset.collapse) ?? order.length) - (rank.get(b.dataset.collapse) ?? order.length))
         .forEach((card) => container.appendChild(card));
 }
@@ -1656,8 +1496,6 @@ function setupReorder() {
         for (const card of container.children) {
             if (card === dragging) continue;
             const box = card.getBoundingClientRect();
-            // Columns mean "nearest" cannot just be vertical distance: a card one column
-            // over and level with the pointer is not where it is going.
             const score = Math.abs(x - (box.left + box.width / 2)) * 2 + Math.abs(y - (box.top + box.height / 2));
             if (score < bestScore) {
                 bestScore = score;
@@ -1692,7 +1530,6 @@ function setupReorder() {
             dragging = card;
             card.classList.add('is-dragging');
             event.dataTransfer.effectAllowed = 'move';
-            // The handle is a few pixels wide; the card is what should follow the pointer.
             event.dataTransfer.setData('text/plain', card.dataset.collapse || '');
             const box = card.getBoundingClientRect();
             event.dataTransfer.setDragImage(card, event.clientX - box.left, event.clientY - box.top);
@@ -1704,7 +1541,6 @@ function setupReorder() {
             rememberOrder(container);
         });
 
-        // Dragging is not available to everyone: the keyboard does the same job.
         grip.addEventListener('keydown', (event) => {
             const step = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
             if (!event.altKey || !step) return;
@@ -1719,27 +1555,12 @@ function setupReorder() {
     }
 }
 
-// --- which chart is the big one -------------------------------------------
 
-// The dashboard draws one graph large and four small, and which one should be large is not
-// the same answer for everyone: a player learning to read momentum wants the RSI panel big,
-// someone watching their money wants the equity curve. Rather than a setting to go and find,
-// clicking a small graph swaps it with the large one.
-//
-// The cards move, not the canvases inside them. A card carries its own title, notes and
-// folded state wherever it lands, and a canvas that had been rebuilt would be a new element
-// with no chart drawn on it. The choice is remembered per browser, the way the folded cards
-// and their order are.
 const HERO_KEY = 'tradingTeacher.heroChart';
 const CHART_KEYS = ['price', 'rsi', 'macd', 'basket', 'equity'];
-// How each panel is named to a screen reader. The price panel's heading is filled in from the
-// session's focus symbol - a dash at setup time - so it is named here instead.
 const CHART_LABELS = { price: 'price', basket: 'basket', equity: 'account equity' };
 let priceHint = null;
 
-// The charts can also be dragged onto each other. Five slots keep their shape - one large,
-// four small - and dropping a chart on another swaps the two, so whichever card lands in the
-// first slot is the large one. Enlarge is the same swap, aimed at that first slot.
 const CHART_ORDER_KEY = 'tradingTeacher.chartOrder';
 let draggingChart = null;
 
@@ -1755,8 +1576,6 @@ function cardForChart(name) {
 
 function swapCharts(a, b, { remember = true } = {}) {
     if (!a || !b || a === b) return;
-    // A comment holds the first card's place while the second takes it, so neither card is
-    // ever detached for long enough to lose its canvas.
     const marker = document.createComment('chart-swap');
     a.replaceWith(marker);
     b.replaceWith(a);
@@ -1764,10 +1583,8 @@ function swapCharts(a, b, { remember = true } = {}) {
 
     const cards = chartCards();
     cards.forEach((card, index) => card.classList.toggle('is-hero', index === 0));
-    // A folded panel would take the big stage and stay hidden inside it.
     const fold = cards[0].querySelector('.collapse-toggle');
     if (cards[0].classList.contains('card-collapsed') && fold) fold.click();
-    // A level can hide some charts; a lone survivor in a row still spans both columns.
     for (const id of ['indicator-row', 'portfolio-row']) {
         if (el(id)) balanceRow(el(id));
     }
@@ -1775,7 +1592,7 @@ function swapCharts(a, b, { remember = true } = {}) {
     try {
         localStorage.setItem(CHART_ORDER_KEY, JSON.stringify(cards.map((card) => card.dataset.chart)));
         localStorage.setItem(HERO_KEY, cards[0].dataset.chart);
-    } catch { /* private mode */ }
+    } catch {  }
 }
 
 function storedChartOrder() {
@@ -1787,8 +1604,6 @@ function storedChartOrder() {
     }
 }
 
-// A level that hides the chart in the first slot would leave the large stage empty. The fix
-// is for this level only, so it is not written over the order the player chose.
 function ensureVisibleHero() {
     const cards = chartCards();
     if (!cards[0]?.classList.contains('hidden')) return;
@@ -1829,7 +1644,6 @@ function setupChartMoves(card, name, label, controls) {
         swapCharts(draggingChart, card);
     });
 
-    // Dragging is not available to everyone: Alt + an arrow swaps with the neighbouring slot.
     grip.addEventListener('keydown', (event) => {
         const step = ['ArrowUp', 'ArrowLeft'].includes(event.key) ? -1
             : ['ArrowDown', 'ArrowRight'].includes(event.key) ? 1 : 0;
@@ -1852,8 +1666,6 @@ function storedHero() {
     }
 }
 
-// Both plots end up in a differently sized box. They follow that box on their own, so the
-// swap only has to move the cards and let the containers report their new size.
 function promoteChart(name) {
     swapCharts(cardForChart(name), heroCard());
 }
@@ -1863,9 +1675,6 @@ function setupHeroChart() {
         const name = card.dataset.chart;
         if (!name || !charts[name]) continue;
 
-        // Read the title off a copy with the card's own controls taken out. The heading holds
-        // the fold toggle (and, once this runs, the hint), so the raw textContent would name
-        // the panel "RSI (14)EnlargeHide".
         const title = card.querySelector('h2')?.cloneNode(true);
         if (title) for (const control of title.querySelectorAll('button')) control.remove();
         const label = CHART_LABELS[name]
@@ -1877,9 +1686,6 @@ function setupHeroChart() {
         hint.innerHTML = '<span>Enlarge</span>'
             + '<svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 2.5h-4v4M9.5 13.5h4v-4M2.5 2.5l4.5 4.5M13.5 13.5 9 9"/></svg>';
         hint.setAttribute('aria-label', `Show the ${label} chart large`);
-        // In the header, ahead of the fold toggle, so the two controls sit together at the end
-        // of the row the way the grip does on the utility cards. The click it raises bubbles
-        // to the card, so the button itself needs no handler.
         const header = card.firstElementChild;
         const controls = card.querySelector('[data-chart-controls]') || header;
         if (controls) controls.insertBefore(hint, controls.querySelector('.collapse-toggle'));
@@ -1887,8 +1693,6 @@ function setupHeroChart() {
         if (controls) setupChartMoves(card, name, label, controls);
 
         card.addEventListener('click', (event) => {
-            // The plot and the hint are the targets; the notes under a chart stay selectable
-            // text rather than a hidden button.
             if (!event.target.closest('.chart-stage, .chart-zoom-hint')) return;
             promoteChart(name);
         });
@@ -1903,7 +1707,6 @@ function setupHeroChart() {
     }
 }
 
-// --- the walkthrough ------------------------------------------------------
 
 const TOUR_STEPS = [
     {
@@ -2033,8 +1836,6 @@ function clearSpot() {
     tourSaved = null;
 }
 
-// Inline styles rather than a class: the highlight has to sit above the tour backdrop, and
-// a class invented here would not exist in the compiled Tailwind build.
 function spotlight(element) {
     clearSpot();
     if (!element) return;
@@ -2045,7 +1846,6 @@ function spotlight(element) {
         boxShadow: element.style.boxShadow,
         borderRadius: element.style.borderRadius,
     };
-    // A fixed element (the signals tab) keeps its own position and shape.
     if (getComputedStyle(element).position === 'static') {
         element.style.position = 'relative';
         element.style.borderRadius = '1.5rem';
@@ -2079,9 +1879,6 @@ function placeCard(element) {
 function showTourStep(index) {
     tourIndex = index;
     const step = TOUR_STEPS[index];
-    // The panel, not the canvas inside it: highlighting a bare canvas lights up a rectangle
-    // floating inside its own card. A label is its own control, though - walking up from
-    // the teacher switch would light the entire clock panel instead of the switch.
     const raw = step.target ? el(step.target) : null;
     const element = raw
         ? (raw.tagName === 'LABEL' ? raw : (raw.closest('.rounded-3xl') || raw))
@@ -2095,7 +1892,6 @@ function showTourStep(index) {
 
     if (element) element.scrollIntoView({ behavior: 'smooth', block: 'center' });
     spotlight(element);
-    // Placed after the scroll settles, or the card lands on the element's old position.
     setTimeout(() => placeCard(element), element ? 320 : 0);
 }
 
@@ -2109,16 +1905,12 @@ function endTour() {
     clearSpot();
     el('tour-backdrop').classList.add('hidden');
     el('tour-card').classList.add('hidden');
-    try { localStorage.setItem(TOUR_KEY, '1'); } catch { /* private mode */ }
+    try { localStorage.setItem(TOUR_KEY, '1'); } catch {  }
 }
 
-// --- wiring ---------------------------------------------------------------
 
 el('signals-toggle').addEventListener('click', () => setSignalsOpen(true));
 el('signals-open-btn').addEventListener('click', () => setSignalsOpen(true));
-// Delegated: the strip holds every story several times over, so the listener is on the panel
-// rather than on buttons that are replaced whenever a headline arrives. A headline opens the
-// paper on its own day; anywhere else on the bar opens today's.
 el('news-panel').addEventListener('click', (event) => {
     const chip = event.target.closest('.news-chip');
     const story = chip && newsStories.find((row) => row.id === chip.dataset.story);
@@ -2133,8 +1925,6 @@ el('news-date').addEventListener('change', (event) => loadEdition(event.target.v
 el('news-overlay').addEventListener('click', (event) => {
     if (event.target === el('news-overlay')) closeNews(false);
 });
-// The strip holds still under the pointer, so a passing headline can be caught and read. A
-// touch pointer reports a hover it never leaves, so it is left out of this.
 el('news-viewport').addEventListener('pointerenter', (event) => {
     if (event.pointerType !== 'touch') newsHovered = true;
 });
@@ -2152,7 +1942,6 @@ el('teacher-mode').addEventListener('change', (event) => setTeacherMode(event.ta
 el('coach-continue').addEventListener('click', () => closeCoach(false));
 el('coach-resume').addEventListener('click', () => closeCoach(true));
 
-// With a level running the button opens that level's briefing; otherwise it is the tour.
 el('tutorial-btn').addEventListener('click', () => (latestState?.level ? openBrief(latestState.level) : startTour()));
 el('brief-start').addEventListener('click', () => closeBrief(true));
 el('brief-look').addEventListener('click', () => closeBrief(false));
@@ -2214,8 +2003,6 @@ el('sell-all-btn').addEventListener('click', async () => {
     const button = el('sell-all-btn');
     button.disabled = true;
     try {
-        // Snapshot the positions first: each trade re-renders, so reading the live list
-        // while selling out of it would let the loop skip or repeat a holding.
         for (const position of [...(latestState?.portfolio?.positions ?? [])]) {
             await trade('SELL', position.ticker, position.shares);
         }
@@ -2242,7 +2029,6 @@ el('predict-btn').addEventListener('click', async () => {
         });
         render(await call(`/api/session/${sessionId}/state?focus=${focus}`));
     } catch (error) {
-        // Previously this only reached the console, which made the button look dead.
         errorBox.textContent = error.message;
         errorBox.classList.remove('hidden');
     } finally {
@@ -2277,8 +2063,6 @@ el('sim-extend-btn').addEventListener('click', async () => {
     button.disabled = true;
     button.textContent = 'Generating…';
     try {
-        // Only the horizon changes: the seed and anchor are kept, so the bars already
-        // on screen come back identical and only new days are appended.
         const horizon = (latestSimulation?.config?.horizon_days ?? 252) + 252;
         render(await call(`/api/session/${sessionId}/simulate`, {
             method: 'POST',
@@ -2326,7 +2110,6 @@ el('shock-form').addEventListener('submit', async (event) => {
     }
 });
 
-// --- load -----------------------------------------------------------------
 
 async function loadCompanyNames() {
     try {
@@ -2359,7 +2142,7 @@ async function checkAI() {
     try {
         savedTeacher = localStorage.getItem(TEACHER_KEY);
         tourDone = localStorage.getItem(TOUR_KEY);
-    } catch { /* private mode */ }
+    } catch {  }
     setTeacherMode(savedTeacher === null ? true : savedTeacher === '1');
 
     setupCollapsibles();
@@ -2371,6 +2154,5 @@ async function checkAI() {
     refreshSimulation();
     refreshBasket();
 
-    // First visit gets walked through the screen before the clock ever moves.
     if (!tourDone) startTour();
 })();

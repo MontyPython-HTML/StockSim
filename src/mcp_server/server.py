@@ -26,7 +26,6 @@ def _grounding_frame(ticker: str, as_of: date):
 
 @mcp.tool()
 def get_price_history(ticker: str, start_date: str, end_date: str) -> dict:
-    #Dates are ISO (YYYY-MM-DD)
     frame = indicators.compute_all(
         database.fetch_price_history(ticker, _parse(start_date), _parse(end_date))
     )
@@ -151,8 +150,6 @@ def explain_pattern(
 def log_ai_event(
     session_id: str, ticker: str, sim_date: str, event_type: str, payload: dict
 ) -> dict:
-    #Persist a prediction, news event, market shock or pattern lesson into mcp_events.
-    #event_type must be one the mcp_events check constraint allows.
     
     event_id = database.insert_mcp_event(
         session_id=session_id,

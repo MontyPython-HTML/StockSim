@@ -13,7 +13,6 @@ listed on a tech-heavy index.
 
 NASDAQ100 = "nasdaq100"
 
-# (ticker, company name, sector, is_tech)
 _NASDAQ100: list[tuple[str, str, str, bool]] = [
     ("AAPL", "Apple", "Technology", True),
     ("ABNB", "Airbnb", "Consumer Discretionary", True),
@@ -123,8 +122,6 @@ UNIVERSES: dict[str, list[tuple[str, str, str, bool]]] = {
     NASDAQ100: _NASDAQ100,
 }
 
-# Big caps people expect to see under "tech" that are not index members. Tagged
-# with their own universe so the Nasdaq-100 row for the index stays accurate.
 US_TECH_EXTRA = "us_tech_extra"
 
 _EXTRA_TECH: list[tuple[str, str, str, bool]] = [
@@ -136,15 +133,12 @@ _EXTRA_TECH: list[tuple[str, str, str, bool]] = [
     ("SMCI", "Super Micro Computer", "Technology", True),
 ]
 
-# (ticker, company name, sector, universe, is_tech) for every symbol we know about.
 SEED: list[tuple[str, str, str, str, bool]] = [
     (ticker, name, sector, NASDAQ100, is_tech) for ticker, name, sector, is_tech in _NASDAQ100
 ] + [
     (ticker, name, sector, US_TECH_EXTRA, is_tech) for ticker, name, sector, is_tech in _EXTRA_TECH
 ]
 
-# The high-liquidity names worth having on hand immediately after a fresh clone.
-# Everything else is one `--universe` run away (see ingest_prices.py).
 STARTER_TICKERS: list[str] = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "AVGO", "TSLA", "NFLX",
     "AMD", "ADBE", "INTC", "QCOM", "TXN", "MU", "AMAT", "LRCX", "KLAC", "MRVL",

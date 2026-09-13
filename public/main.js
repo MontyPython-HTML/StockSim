@@ -1,4 +1,3 @@
-// Wait for images, Tailwind, and fonts to fully load so scroll positions are exact
 window.addEventListener("load", () => {
   gsap.registerPlugin(ScrollTrigger);
   let posX = 0, posY = 0;
@@ -28,8 +27,6 @@ window.addEventListener("load", () => {
       mouseX = e.clientX;
       mouseY = e.clientY;
     });
-    // Only real interactive elements swell the cursor. The cards used to be in this
-    // list, which made every hover look clickable even though none of them do anything.
     const hoverTargets = document.querySelectorAll("a, button");
     hoverTargets.forEach((target) => {
       target.addEventListener("mouseenter", () => {

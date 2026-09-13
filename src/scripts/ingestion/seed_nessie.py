@@ -27,8 +27,6 @@ FIRST_NAME = "Demo"
 LAST_NAME = "Trader"
 TIMEOUT = 20
 
-# Ordinary adult money, sized so a $10k account feels the drag without being wiped out in
-# a month. recurring_date is the day of the month the standing order comes out.
 BILLS = [
     {"payee": "Sunrise Apartments", "nickname": "Rent", "recurring_date": 1, "payment_amount": 1450.00},
     {"payee": "City Power & Light", "nickname": "Utilities", "recurring_date": 5, "payment_amount": 180.00},
@@ -40,7 +38,6 @@ BILLS = [
     {"payee": "Sable Student Loans", "nickname": "Student loan", "recurring_date": 25, "payment_amount": 280.00},
 ]
 
-# The game reads the latest "Payroll - <employer>" deposit as a paycheck paid every two weeks.
 PAYROLL = {"amount": 2100.00, "description": "Payroll - Northwind Logistics"}
 
 FIRST_NAMES = ["Avery", "Jordan", "Maya", "Diego", "Priya", "Marcus", "Elena", "Kai", "Nora", "Samir", "Tessa", "Owen"]
@@ -57,10 +54,8 @@ EMPLOYERS = [
 ]
 LANDLORDS = ["Sunrise Apartments", "Maple Court Lofts", "Parkside Residences"]
 
-# Multiplier on the non-essential bills.
 HABITS = {"frugal": 0.6, "typical": 1.0, "big spender": 1.7}
 
-# nickname, payees, monthly (low, high), chance of having it, non-essential
 SPENDING = [
     ("Utilities", ["City Power & Light", "Metro Energy Co"], (90, 220), 1.0, False),
     ("Phone", ["Beacon Wireless", "Orbit Mobile"], (35, 95), 0.95, False),
@@ -202,7 +197,6 @@ def random_profile(rng: random.Random) -> dict:
             }
         )
 
-    # Leave room to invest: past 90% of pay, the priciest non-essentials go first.
     extras = sorted((bill for bill in bills if bill["optional"]), key=lambda bill: bill["payment_amount"])
     while extras and sum(bill["payment_amount"] for bill in bills) > monthly_pay * 0.9:
         bills.remove(extras.pop())
@@ -220,7 +214,6 @@ def random_profile(rng: random.Random) -> dict:
         "balance": rng.randrange(5000, 40001, 250),
         "habit": habit,
         "monthly_pay": monthly_pay,
-        # Nessie stores deposit amounts as whole dollars.
         "paycheck": round(monthly_pay * 12 / 26),
         "employer": rng.choice(EMPLOYERS),
         "bills": sorted(bills, key=lambda bill: bill["recurring_date"]),

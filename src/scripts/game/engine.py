@@ -30,22 +30,12 @@ from scripts.game import events, expenses, indicators, levels, news, patterns, p
 
 DEFAULT_CHART_WINDOW = 180
 
-# A guard for fast-forwarding: asking for thousands of days would otherwise return a
-# signal list long enough to stall the browser drawing it. The UI batches five days at a
-# time, so this never bites in normal play.
 MAX_SIGNALS_PER_TICK = 40
 
-# How many trailing bars signal detection is handed. The rules compare the last two
-# bars of already-computed columns, so a handful is plenty and keeps an advance cheap.
 SIGNAL_TAIL_ROWS = 5
 
-# How far past the saved clock the page may read ahead. The page buffers a few seconds of
-# play at a time; the cap keeps the endpoint from becoming a window onto the whole future.
 LOOKAHEAD_MAX_DAYS = 60
 
-# A share count is a sanity check, not an economic one: no player trades a billion shares,
-# and anything past this either overflows NUMERIC on the way in or blows up the cost
-# arithmetic. Also catches NaN and infinity, which slip through every comparison.
 MAX_TRADE_SHARES = Decimal("1000000000")
 
 log = logging.getLogger(__name__)
@@ -73,8 +63,6 @@ def normalise_tickers(raw) -> list[str]:
         raw = [part for part in raw.replace(",", " ").split() if part]
     seen: dict[str, None] = {}
     for item in raw or []:
-        # Rejected rather than coerced: str(None) used to become the symbol "NONE", which
-        # then failed as "no price data for NONE" - a confusing way to say "bad payload".
         if not isinstance(item, str):
             raise GameError(f"symbols must be strings like \"AAPL\" (got {item!r})")
         symbol = item.strip().upper()
@@ -89,8 +77,6 @@ def normalise_tickers(raw) -> list[str]:
     return tickers
 
 
-# --- state ----------------------------------------------------------------
-
 
 def _portfolio(
     session: dict,
@@ -99,7 +85,14 @@ def _portfolio(
     bills_paid: float = 0.0,
     salary_earned: float = 0.0,
 ) -> dict:
-    """Value every position at its own last close, not the focused chart's price."""
+    """Value every position at its own last close, not the focused chart's price.
+
+    Reports two returns, and they are deliberately different numbers. `trading_return_pct`
+    takes the bills and the paychecks back out, so a salary never passes for good stock
+    picking; it is the headline. `total_return_pct` is the account itself - trading result
+    minus bills plus pay, which is what decides whether the player went broke. Dividends
+    stay in both: they are investment income from the holdings, not an outside flow.
+    """
     positions = []
     market_value = 0.0
     for holding in holdings:
@@ -121,21 +114,21 @@ def _portfolio(
     cash = float(session["cash_balance"])
     starting_cash = float(session["starting_cash"])
     net_worth = cash + market_value
+    trading_return_pct = (
+        (net_worth + bills_paid - salary_earned - starting_cash) / starting_cash * 100
+        if starting_cash
+        else 0.0
+    )
     return {
         "positions": positions,
         "market_value": market_value,
         "cash_balance": cash,
         "net_worth": net_worth,
         "starting_cash": starting_cash,
-        # This headline is deliberately stock performance only: salaries and bills are
-        # excluded, while dividends remain investment income from the holdings.
-        "total_return_pct": (net_worth + bills_paid - salary_earned - starting_cash) / starting_cash * 100 if starting_cash else 0.0,
-        # Rent is not a trading loss and a paycheck is not a trading gain. The account number
-        # decides whether the player went broke; this one is the only fair read on their
-        # decisions, and showing both is what makes the difference teachable.
+        "total_return_pct": (net_worth - starting_cash) / starting_cash * 100 if starting_cash else 0.0,
         "bills_paid": bills_paid,
         "salary_earned": salary_earned,
-        "trading_return_pct": (net_worth + bills_paid - salary_earned - starting_cash) / starting_cash * 100 if starting_cash else 0.0,
+        "trading_return_pct": trading_return_pct,
         "overdrawn": cash < 0,
     }
 
@@ -281,15 +274,12 @@ def _state_from_bundle(
             float(row.get("reinvested_shares") or 0) for row in bundle.get("dividends") or []
         ),
         "reinvest_dividends": bool(session.get("reinvest_dividends")),
-        # What is coming, not just what happened: the ex-dates already sitting in the price
-        # history, and what each position stands to be paid when the clock reaches them.
         "dividend_schedule": dividend_schedule(sources, bundle["holdings"], sim_date),
         "dividend_summary": {
             "total": sum(float(row["amount"]) for row in bundle.get("dividends") or []),
             "payments": len(bundle.get("dividends") or []),
         },
         "chart": indicators.to_series(history.tail(window_days)),
-        # How wide to draw the x axis, fixed for the session's life. See _chart_capacity.
         "chart_capacity": _chart_capacity(
             focus_source, _as_date(session["end_date"]), window_days
         ),
@@ -315,10 +305,7 @@ def _state_from_bundle(
             }
             for event in bundle["events"]
         ],
-        # The syllabus with what this session has covered, so the screen can show which
-        # patterns the player has actually been taught and which are still ahead of them.
         "patterns": levels.filter_patterns(level, patterns.progress(bundle["events"])),
-        # Real-life money: what the bank has taken and paid in, and what is coming next.
         "expenses": {
             **expenses.summary(session, sim_date, ledger),
             "charged": [expenses.ledger_row(row) for row in ledger],
@@ -380,9 +367,6 @@ def peek_chart(
             return empty
         sim_date = min(upcoming)
 
-    # The generated future is only as long as it was rolled for, and reading past its end
-    # would extend it - a write in the middle of a read. The tick that actually reaches the
-    # end does the rolling, and the page falls back to asking for the window afterwards.
     bounds = sources[focus].bounds()
     if bounds and sim_date > bounds["last_day"]:
         return empty
@@ -392,13 +376,9 @@ def peek_chart(
         "focus": focus,
         "sim_date": sim_date.isoformat(),
         "chart": indicators.to_series(history.tail(window_days)),
-        # Carried alongside the window so a peeked day is drawn into exactly the geometry
-        # the confirming response will use, whatever the page has cached.
         "chart_capacity": _chart_capacity(sources[focus], end_date, window_days),
     }
 
-
-# --- starting a run -------------------------------------------------------
 
 
 def _seed_for(base_seed: int | None, ticker: str) -> int | None:
@@ -422,8 +402,6 @@ def _window_for(watchlist: list[str], start_date: date, end_date: date) -> tuple
     for ticker in watchlist:
         bounds = price_cache.bounds(ticker)
         if not bounds:
-            # "Ingest it first" is only advice for a symbol we know about. Telling someone
-            # to ingest an unknown ticker sends them to a command that cannot help.
             if ticker not in catalog:
                 raise GameError(
                     f"Unknown symbol {ticker}. Pick one from the catalog on the start page."
@@ -434,7 +412,6 @@ def _window_for(watchlist: list[str], start_date: date, end_date: date) -> tuple
             raise GameError(f"No {ticker} trading days between {start_date} and {end_date}")
         first_days.append(first)
         last_days.append(bounds["last_day"])
-    # Latest first-day and earliest last-day: the span where every chosen symbol trades.
     return max(first_days), min(end_date, min(last_days))
 
 
@@ -465,7 +442,6 @@ def start_session(
     if not watchlist:
         raise GameError("Pick at least one symbol to trade.")
 
-    # One round trip per symbol is the bulk of starting a run, so warm them together.
     price_cache.prefetch(watchlist)
     first_day, session_end = _window_for(watchlist, start_date, end_date)
 
@@ -504,7 +480,6 @@ def start_session(
     database.set_session_tickers(session_id, watchlist)
 
     if simulate_future:
-        # The run only ends when the generated futures do, not when real data ran out.
         last_simulated = session_end
         for ticker in watchlist:
             source = price_source.fork_session(
@@ -541,8 +516,6 @@ def start_level(number: int, seed: int | None = None) -> dict:
     )
 
 
-# --- background AI --------------------------------------------------------
-
 
 def session_sectors(tickers) -> dict[str, dict]:
     """Sector lookup for a session's symbols, tolerating a catalog that is not migrated.
@@ -552,7 +525,7 @@ def session_sectors(tickers) -> dict[str, dict]:
     """
     try:
         return database.ticker_sectors(list(tickers))
-    except Exception:  # noqa: BLE001 - a missing catalog is not worth a failed tick
+    except Exception:  # noqa: BLE001
         log.warning("sector lookup unavailable; sector-scoped events disabled")
         return {}
 
@@ -582,17 +555,11 @@ def _least_covered(watchlist: list[str], event_log: list[dict], event_type: str)
 def _run_ai(kind: str, session_id: str, ticker: str, sim_date: date, detail: str = "") -> None:
     key = (session_id, kind, ticker, detail) if detail else (session_id, kind, ticker)
     try:
-        # Imported inside the try on purpose: _schedule_ai has already marked this key
-        # in-flight, and an import that raised outside would leave it there forever,
-        # silently disabling every future event of this kind for the whole process.
         from scripts.api import gemini_mcp_client
 
         if kind == "PREDICTION":
             gemini_mcp_client.predict(session_id, ticker, sim_date)
         elif kind == patterns.LESSON_EVENT_TYPE:
-            # `detail` is the signal name the detector produced when this was queued. The
-            # lesson is taught against the chart as it stands, so the numbers quoted in it
-            # are the ones the player can see, not the ones from the request thread.
             session = database.get_session(session_id)
             if session:
                 history = price_source.for_session(session, ticker).history_through(sim_date)
@@ -606,9 +573,6 @@ def _run_ai(kind: str, session_id: str, ticker: str, sim_date: date, detail: str
                         None,
                     )
                     if fired is None:
-                        # Should not happen now that the lesson is dated to the signal's own
-                        # bar; if it does, the pattern is still worth teaching, just without
-                        # the detector's read of this particular bar.
                         log.warning(
                             "%s is not on %s's chart at %s; teaching the pattern without a "
                             "chart-specific read",
@@ -619,10 +583,6 @@ def _run_ai(kind: str, session_id: str, ticker: str, sim_date: date, detail: str
                         fired = {"name": detail, "message": "", "direction": "neutral"}
                     patterns.teach(session_id, ticker, sim_date, fired, history)
         elif kind == "MARKET_SHOCK":
-            # Rebuilt here rather than captured: this runs on a worker thread well after
-            # the request that queued it, and each source holds a live DB-backed frame.
-            # The whole watchlist is rebuilt, not just the reported symbol, because the
-            # story may be a sector or market one that lands on several of them.
             session = database.get_session(session_id)
             if session:
                 sources = price_source.for_watchlist(session)
@@ -695,8 +655,6 @@ def _schedule_lesson(
     try:
         lesson_date = _as_date(chosen["date"]) if chosen.get("date") else sim_date
     except (TypeError, ValueError):
-        # A signal we produced ourselves always carries a date; a bad one must not turn a
-        # clock tick into a 500, so the walk's last day is the fallback.
         log.warning("lesson signal %r has an unusable date %r", chosen["name"], chosen.get("date"))
         lesson_date = sim_date
     if _schedule_ai(
@@ -747,7 +705,6 @@ def _maybe_schedule_ai(
         if _schedule_ai("PREDICTION", session_id, prediction_ticker, sim_date):
             scheduled.append({"kind": "PREDICTION", "ticker": prediction_ticker})
 
-    # Shocks only exist where there is a generated future to bend.
     simulated = [ticker for ticker in tickers if sources[ticker].kind == "simulated"]
     if coach and simulated:
         shock_ticker = _least_covered(simulated, event_log, "MARKET_SHOCK")
@@ -755,15 +712,11 @@ def _maybe_schedule_ai(
             if _schedule_ai("MARKET_SHOCK", session_id, shock_ticker, sim_date):
                 scheduled.append({"kind": "MARKET_SHOCK", "ticker": shock_ticker})
 
-    # Note this is not behind a dice roll like the others: if the player's chart produced
-    # a pattern they have never been taught, teaching it is the point of the feature.
     if config.PATTERN_LESSONS and signals:
         _schedule_lesson(session_id, sim_date, event_log, signals, days_since, scheduled)
 
     return scheduled
 
-
-# --- the clock ------------------------------------------------------------
 
 
 def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str | None = None) -> dict:
@@ -778,8 +731,6 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
 
     end_date = _as_date(session["end_date"])
     sim_date = _as_date(session["sim_date"])
-    # A cold cache would otherwise fetch each symbol's history one at a time on the first
-    # tick, which is where a fast-forward used to stall before it started moving.
     price_cache.prefetch(watchlist)
     sources = price_source.for_watchlist(session, watchlist)
 
@@ -787,7 +738,6 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
         state = _state_from_bundle(bundle, focus)
         return {**state, "signals": [], "pending_ai": []}
 
-    # Walk the days in memory, then write the result once.
     signals: list[dict] = []
     finished = False
     for _ in range(max(1, days)):
@@ -801,10 +751,6 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
             history = sources[ticker].history_through(sim_date)
             if history.empty:
                 continue
-            # Every rule only ever looks at the last two bars, and the indicator columns
-            # are already computed on the whole frame, so the tail is enough. Passing the
-            # full history here made a fast-forward re-scan decades of rows per symbol per
-            # day to read two numbers.
             for signal in indicators.detect_signals(history.tail(SIGNAL_TAIL_ROWS)):
                 signals.append({**signal, "ticker": ticker, "date": sim_date.isoformat()})
 
@@ -814,8 +760,6 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
     if len(signals) > MAX_SIGNALS_PER_TICK:
         signals = signals[-MAX_SIGNALS_PER_TICK:]
 
-    # Bills and paychecks for the days just crossed, settled before the clock is saved: if
-    # this fails the date stays put, and the retry re-walks days the ledger already holds.
     previous_sim_date = _as_date(session["sim_date"])
     charged = (
         expenses.apply_due(session, previous_sim_date, sim_date, watchlist)
@@ -823,9 +767,6 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
         else []
     )
     dividend_rows = database.settle_dividends(session_id, watchlist, previous_sim_date, sim_date)
-    # Dividends are credited straight to cash by that call, but the session row was read
-    # before it ran: without this the tick that lands on an ex-date hands the page
-    # yesterday's balance, and the player watches the payment appear a day late.
     if dividend_rows:
         session["cash_balance"] = dividend_rows[-1]["cash_after"]
 
@@ -846,11 +787,6 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
     session["sim_date"] = sim_date
     if finished:
         session["status"] = "finished"
-    # The bundle is one tick stale: the ledger rows just written are the ones the player has
-    # not seen, and a forced sale - or a reinvested dividend, which buys shares the same way -
-    # has moved holdings and the trade log in the meantime. Re-reading only when something
-    # behind the player's back actually changed is the difference between one query and one
-    # query per tick.
     if any(row["sold"] for row in charged) or any(row.get("reinvested") for row in dividend_rows):
         fresh = database.load_session_bundle(session_id)
         bundle["holdings"], bundle["trades"] = fresh["holdings"], fresh["trades"]
@@ -914,20 +850,16 @@ def lookahead(session_id: str, after: date | None = None, days: int = 10) -> dic
             bar = history.iloc[end - 1]
             close = float(bar["close"])
             previous = float(history["close"].iloc[end - 2]) if end > 1 else None
-            # Same numbers latest_quotes gives the state: the last close at or before the day.
             frame["quotes"][ticker] = {
                 "close": close,
                 "previous_close": previous,
                 "change_pct": (close - previous) / previous * 100 if previous else None,
                 "simulated": bool(fork is not None and bar["ts"] > fork),
             }
-            # A chart only gains a row on the days its own symbol traded.
             if bar["ts"] == day:
                 frame["rows"][ticker] = indicators.to_series(history.iloc[end - 1 : end])[0]
     return {**result, "frames": frames}
 
-
-# --- trading --------------------------------------------------------------
 
 
 def set_reinvestment(session_id: str, enabled: bool, focus: str | None = None) -> dict:
@@ -951,8 +883,6 @@ def execute_trade(
         raise GameError("Session not found")
 
     if session["status"] != "active":
-        # The clock is the risk. Trading on after it stops would let a finished run be
-        # improved at frozen prices, which is exactly what the exercise is measuring.
         raise GameError("This session is over. Start a new one to keep trading.")
 
     watchlist = database.session_tickers(session_id)
@@ -968,8 +898,6 @@ def execute_trade(
         quantity = Decimal(str(shares))
     except Exception:
         raise GameError("shares must be a number")
-    # Not just tidiness: an absurd or non-finite size survives the multiplication but blows
-    # up in quantize() as a decimal.InvalidOperation, which reached the player as a 500.
     if not quantity.is_finite() or quantity > MAX_TRADE_SHARES:
         raise GameError(f"shares must be between 0 and {MAX_TRADE_SHARES:,}")
     if quantity <= 0:
@@ -1014,8 +942,6 @@ def execute_trade(
     return get_state(session_id, focus)
 
 
-# --- simulated future -----------------------------------------------------
-
 
 def fork_simulation(session_id: str, focus: str | None = None, **overrides) -> dict:
     """Fork every symbol in this session's watchlist onto its own generated future.
@@ -1035,9 +961,6 @@ def fork_simulation(session_id: str, focus: str | None = None, **overrides) -> d
 
     price_cache.prefetch(watchlist)
 
-    # The future starts the day after the last real bar the run can see, so the player
-    # keeps every real day they have not replayed yet. A finished run sits exactly on its
-    # end date, so max() covers that case without a second branch.
     fork_date = max(_as_date(session["end_date"]), _as_date(session["sim_date"]))
 
     horizon = overrides.get("horizon_days")
@@ -1057,8 +980,6 @@ def fork_simulation(session_id: str, focus: str | None = None, **overrides) -> d
             raise GameError(str(exc))
         last_simulated = max(last_simulated, source.bounds()["last_day"])
 
-    # A session that already ran out of real data is 'finished'; forking gives it more
-    # days to play, so it has to become active again or advancing would stay a no-op.
     updates: dict = {"end_date": last_simulated}
     if _as_date(session["sim_date"]) < last_simulated:
         updates["status"] = "active"

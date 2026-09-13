@@ -39,7 +39,6 @@ def _finite(value):
 class GameJSONProvider(DefaultJSONProvider):
     def default(self, o):
         if isinstance(o, Decimal):
-            # numeric columns arrive as Decimal, including the odd NaN one.
             return float(o) if o.is_finite() else None
         if isinstance(o, (date, datetime)):
             return o.isoformat()
@@ -54,22 +53,15 @@ app.json = GameJSONProvider(app)
 app.register_blueprint(api)
 
 
-# schema.sql is idempotent and carries the migrations, so applying it once at boot keeps
-# a long-lived shared database (or a teammate's stale checkout) in step with the code
-# instead of failing on a column the code no longer writes. A database that is missing
-# or unreachable is a display problem the landing page already tolerates.
 with app.app_context():
     try:
         database.apply_schema()
-    except Exception:  # noqa: BLE001 - never block startup on the schema step
+    except Exception:  # noqa: BLE001
         app.logger.warning("could not apply schema at startup", exc_info=True)
 
-    # Dial the database now, on the main thread, rather than from whichever request
-    # happens to arrive first: the pool's connections are made under a lock, so the first
-    # page load otherwise pays for all of them and every page load beside it waits.
     try:
         app.logger.info("database pool ready: %s", database.warm_up())
-    except Exception:  # noqa: BLE001 - a missing database is reported per request
+    except Exception:  # noqa: BLE001
         app.logger.warning("could not open the database pool at startup", exc_info=True)
 
 
@@ -83,7 +75,7 @@ def _warm_ai_import() -> None:
     """
     try:
         from scripts.api import gemini_mcp_client  # noqa: F401
-    except Exception:  # noqa: BLE001 - an unusable MCP stack is reported per request
+    except Exception:  # noqa: BLE001
         app.logger.warning("MCP client import failed; AI features will report it", exc_info=True)
 
 
@@ -104,7 +96,7 @@ def _catalog() -> tuple[list[dict], dict]:
     """
     try:
         return database.list_universe(), database.universe_stats()
-    except Exception:  # noqa: BLE001 - a missing catalog is a display problem, not a crash
+    except Exception:  # noqa: BLE001
         app.logger.warning("ticker catalog unavailable; run scripts.ingestion.sync_universe")
         return [], {}
 
@@ -124,9 +116,6 @@ def home():
 
 @app.route('/game/<session_id>')
 def game(session_id: str):
-    # A malformed id is a missing session, not a crash: the id goes straight into a uuid
-    # column, so /game/garbage raised InvalidTextRepresentation and served a 500 page
-    # instead of sending the player back to the picker.
     try:
         UUID(session_id)
     except ValueError:
@@ -134,40 +123,7 @@ def game(session_id: str):
     session = database.get_session(session_id)
     if not session:
         return redirect(url_for('home'))
-    # The session's symbols live in session_tickers now, so the page is handed only its
-    # id and fetches its own state - a session's focus starts on the first watchlist name.
     return render_template('game.html', session_id=session_id)
-
-
-
-
-
-def build_chart(symbol):
-    df = yf.download(symbol, period="6mo")
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.droplevel(1)
-
-    fig = go.Figure(data=[go.Candlestick(
-        x=df.index,
-        open=df["Open"], high=df["High"],
-        low=df["Low"], close=df["Close"],
-        increasing_line_color="#0f7a45",
-        decreasing_line_color="#b3261e",
-    )])
-    fig.update_layout(
-        margin=dict(l=40, r=10, t=10, b=30),
-        xaxis_rangeslider_visible=False,
-        plot_bgcolor="white", paper_bgcolor="white",
-        showlegend=False, height=400,
-    )
-    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])], gridcolor="#e5e7eb")
-    fig.update_yaxes(gridcolor="#e5e7eb")
-
-    return fig.to_html(
-        full_html=False,
-        include_plotlyjs="cdn",
-        config={"displayModeBar": False, "responsive": True},
-    )
 
 
 if __name__ == '__main__':

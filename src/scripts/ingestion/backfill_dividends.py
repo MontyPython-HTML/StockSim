@@ -28,8 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.api import finance
 from scripts.database import database
 
-# yfinance throttles a tight loop, the same as the price ingest: a short pause between
-# symbols costs a minute across the catalog and avoids the 429s.
 PAUSE_BETWEEN_TICKERS = 0.4
 
 
@@ -53,8 +51,6 @@ def dividends_for(ticker: str) -> list[tuple[date, float]]:
     bounds = database.fetch_date_bounds(ticker)
     if not bounds:
         return []
-    # One day of slack at the end: fetch_ohlcv treats `end` as inclusive before it adds the
-    # day that yfinance's own end parameter requires.
     frame = finance.fetch_ohlcv(ticker, bounds["first_day"], bounds["last_day"] + timedelta(days=1))
     if frame.empty or "Dividends" not in frame.columns:
         return []
@@ -98,7 +94,7 @@ def main() -> None:
         print(f"[{position}/{len(tickers)}]", end=" ")
         try:
             found, rows = backfill(ticker, args.dry_run)
-        except Exception as exc:  # noqa: BLE001 - one throttled symbol must not stop the run
+        except Exception as exc:  # noqa: BLE001
             failures += 1
             print(f"{ticker}: FAILED ({type(exc).__name__}: {str(exc)[:120]})")
             continue

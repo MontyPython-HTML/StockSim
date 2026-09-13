@@ -19,7 +19,7 @@
                 <span class="text-xl font-semibold tracking-tight">StockSim</span>
             </div>
             <div class="flex items-center gap-6 text-sm text-muted">
-                <span class="hidden sm:inline">Replay any stretch since 1962</span>
+                <span class="hidden sm:inline">Replay any stretch since 1998</span>
                 <span class="hidden sm:inline">Trade a whole basket</span>
                 <span class="rounded-full border border-line-strong px-5 py-2 font-mono text-xs text-muted">
                     {{ funding_source }}
@@ -35,8 +35,6 @@
         </div>
         {% endif %}
 
-        <!-- The title and its pitch run the full page width. Held inside the picker card they
-             pushed the picker itself most of a screen down the page. -->
         <div class="mb-6">
             <h1 class="text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
                 Pick a basket and replay the market.
@@ -48,9 +46,6 @@
             </p>
         </div>
 
-        <!-- Training levels: short runs that teach one tool at a time. Each one switches off
-             the panels it is not teaching and grades every trade against a single rule, so the
-             full simulation below is the thing you graduate to. -->
         <section id="levels"
             class="mb-6 rounded-3xl border border-brand/30 bg-gradient-to-br from-brand/15 via-surface to-surface p-6">
             <div class="flex flex-wrap items-end justify-between gap-4">
@@ -95,8 +90,6 @@
             <p id="levels-error" class="mt-4 hidden rounded-xl border border-down/40 bg-down/10 p-4 text-down"></p>
         </section>
 
-        <!-- Two columns from 1024px, not 1280px. On a laptop the picker and the settings used
-             to stack into one very tall column with an empty half-page beside it. -->
         <form id="start-form" class="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
             <section class="rounded-3xl border border-line bg-surface p-6">
                 <div class="flex flex-wrap items-center justify-between gap-3">
@@ -120,8 +113,6 @@
                 <input type="search" id="filter" placeholder="Filter by symbol or company"
                     class="mt-3 mb-3 w-full rounded-xl border border-line-strong bg-ink px-4 py-2.5 text-white outline-none placeholder:text-dim focus:border-brand">
 
-                <!-- The list is what scrolls, and its ceiling tracks the window: the picker,
-                     the basket and the settings all stay on one screen. -->
                 <div id="picker" class="max-h-[min(24rem,40vh)] overflow-y-auto rounded-2xl border border-line">
                     {% for sector, members in universe | groupby('sector') %}
                     <div data-sector-group>
@@ -155,9 +146,6 @@
                     out &mdash; load them with <code class="font-mono text-xs">ingest_prices.py</code>.
                 </p>
 
-                <!-- The basket sits under the list it is picked from: choosing and confirming
-                     are the same decision, so they belong in the same card, and the running
-                     count reads on the same line as the heading. -->
                 <div class="mt-5 border-t border-line pt-5">
                     <div class="flex flex-wrap items-baseline justify-between gap-2">
                         <h2 class="text-lg font-semibold">2 &middot; Your basket</h2>
@@ -168,9 +156,6 @@
                     </div>
                 </div>
 
-                <!-- The commit button closes the column you have to fill in to start, instead
-                     of sitting at the foot of the settings column and adding its height to the
-                     taller of the two. -->
                 <button type="submit"
                     class="mt-5 w-full rounded-full bg-brand py-3 text-base font-semibold transition hover:bg-brand-soft">
                     Start trading
@@ -183,7 +168,6 @@
             </section>
 
             <section class="flex flex-col gap-4">
-                <!-- The one teal panel, mirroring the mock's highlight card. -->
                 <div class="rounded-3xl border border-accent/30 bg-gradient-to-br from-accent/30 via-accent/15 to-transparent p-4">
                     <h2 class="text-lg font-bold leading-snug">Keep trading when the real data runs out</h2>
                     <p class="mt-1.5 text-sm leading-relaxed text-muted">
@@ -200,8 +184,6 @@
                 </div>
 
                 <div class="rounded-3xl border border-line bg-surface p-4">
-                    <!-- Heading and presets share a line: four stacked rows of chrome cost more
-                         height than the fields they were framing. -->
                     <div class="flex flex-wrap items-center justify-between gap-2">
                         <h2 class="text-lg font-semibold">3 &middot; Time range</h2>
                         <div class="flex flex-wrap gap-1.5">
@@ -244,9 +226,6 @@
                         <div id="bank-profiles" class="space-y-1.5">
                             <p class="text-sm text-dim">Loading bank customers&hellip;</p>
                         </div>
-                        <!-- Paycheck switch and amount on one row, with the arithmetic under it:
-                             three stacked rows for one optional number cost more height than the
-                             bank picker above them. -->
                         <div class="mt-2 flex items-center gap-3 border-t border-line pt-2">
                             <label class="flex min-w-0 flex-1 cursor-pointer items-start gap-3">
                                 <input type="checkbox" id="salary-on" class="tick mt-0.5 h-5 w-5" checked>
@@ -277,8 +256,6 @@
             </section>
         </form>
 
-        <!-- Catalog totals: true, but they say nothing about the run about to be set up, so
-             they sit under it as a footer rather than above it as a headline. -->
         {% if stats and stats.known %}
         <div class="mt-6 flex flex-wrap gap-x-8 gap-y-3 border-t border-line pt-4 text-xs text-dim">
             <span>Symbols known <strong class="ml-1 font-semibold tabular-nums text-muted">{{ stats.known }}</strong></span>

@@ -19,12 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import config
 
-# A deliberately tiny pool with a short wait, so saturation is reachable in a test instead
-# of in production. Set before the pool is first built - it reads config at creation.
 config.DB_POOL_MAX = 3
 config.DB_POOL_MIN = 1
 config.DB_POOL_WAIT_SECONDS = 1.0
-config.DB_POOL_IDLE_PING_SECONDS = 0.0  # every checkout re-validates
+config.DB_POOL_IDLE_PING_SECONDS = 0.0
 
 from scripts.database import database  # noqa: E402
 
@@ -73,7 +71,6 @@ def test_saturation_answers_instead_of_hanging() -> None:
         for ctx in held:
             ctx.__exit__(None, None, None)
 
-    # The pool must drain: a transient burst cannot poison it.
     with database.get_cursor() as cur:
         cur.execute("SELECT 1 AS ok")
         cur.fetchone()
@@ -82,8 +79,6 @@ def test_saturation_answers_instead_of_hanging() -> None:
 
 def test_concurrent_burst() -> None:
     print("\na burst of threads all get served")
-    # The saturation test above set a deliberately impatient wait. Six threads sharing
-    # three connections need a real budget, which is exactly what production gets.
     config.DB_POOL_WAIT_SECONDS = 5.0
     errors: list[str] = []
     served = threading.Semaphore(0)
@@ -93,7 +88,7 @@ def test_concurrent_burst() -> None:
             with database.get_cursor() as cur:
                 cur.execute("SELECT pg_sleep(0.2)")
             served.release()
-        except Exception as error:  # noqa: BLE001 - the point is to report anything at all
+        except Exception as error:  # noqa: BLE001
             errors.append(f"{type(error).__name__}: {error}")
 
     threads = [threading.Thread(target=worker) for _ in range(6)]
@@ -111,12 +106,10 @@ def test_dead_connection_is_replaced() -> None:
     contexts = [database.get_conn() for _ in range(2)]
     conns = [context.__enter__() for context in contexts]
     pids = []
-    for conn in conns:  # get_conn hands back a plain connection, not a dict cursor
+    for conn in conns:
         with conn.cursor() as cur:
             cur.execute("SELECT pg_backend_pid()")
             pids.append(cur.fetchone()[0])
-    # Killed from a third connection, while the doomed pair is still checked out: a
-    # connection cannot terminate its own backend and survive to report it.
     with database.get_cursor() as cur:
         cur.execute("SELECT pg_terminate_backend(pid) AS killed FROM unnest(%s::int[]) AS pid", (pids,))
         killed = [row["killed"] for row in cur.fetchall()]

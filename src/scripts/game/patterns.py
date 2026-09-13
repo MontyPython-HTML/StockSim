@@ -26,8 +26,6 @@ from scripts.game import indicators
 
 log = logging.getLogger(__name__)
 
-# Retaught material is spaced out by session count, per symbol, so a pattern that keeps
-# firing does not turn the feed into the same card over and over.
 DEFAULT_REPEAT_GAP_DAYS = 20
 
 
@@ -36,9 +34,9 @@ class Pattern:
     """One chart pattern, with the lesson text the coach teaches it from."""
 
     slug: str
-    name: str  # must equal the `name` indicators.detect_signals emits
+    name: str
     family: str
-    tension: str  # the question this pattern makes the player ask
+    tension: str
     what_it_is: str
     how_to_spot: tuple[str, ...]
     why_it_matters: str
@@ -65,11 +63,6 @@ class Pattern:
         }
 
 
-# Ordered as a syllabus, not alphabetically: first the two moving-average crosses that
-# define the trend, then the momentum oscillator, then participation. `choose` reads this
-# order, so a session with several patterns on screen at once teaches them in this
-# sequence rather than in whatever order the watchlist happens to be in.
-# The text is written for someone who has never traded: short sentences, everyday words.
 PATTERNS: tuple[Pattern, ...] = (
     Pattern(
         slug="golden_cross",
@@ -309,8 +302,6 @@ def choose_new(signals: list[dict], event_log: list[dict]) -> dict | None:
     ]
     if not fresh:
         return None
-    # Syllabus order, so two patterns on the same bar are taught in a fixed sequence
-    # rather than whichever order the watchlist happened to produce them in.
     return min(fresh, key=lambda s: _ORDER[pattern_slug(s)])
 
 
@@ -326,8 +317,6 @@ def choose_repeat(signals: list[dict], event_log: list[dict]) -> dict | None:
 def pattern_slug(signal: dict) -> str:
     pattern = lesson_for(signal.get("name", ""))
     if pattern is None:
-        # Unreachable for signals this codebase produces; a clear failure beats a KeyError
-        # buried in a worker thread.
         raise KeyError(f"no lesson for signal {signal.get('name')!r}")
     return pattern.slug
 
@@ -353,8 +342,6 @@ def progress(event_log: list[dict]) -> list[dict]:
                 "taught": counts.get(pattern.slug, 0) > 0,
                 "lessons": counts.get(pattern.slug, 0),
                 "first_taught": seen[0].isoformat() if seen else None,
-                # Which of the player's own stocks this pattern turned up in. That link is
-                # the point: the lesson is about their chart, not a textbook example.
                 "first_ticker": seen[1] if seen else None,
             }
         )
@@ -402,8 +389,6 @@ def teach(
     context = indicators.latest_row_summary(frame) if frame is not None else {}
     payload = None
     try:
-        # Imported here, like events.run, so the MCP subprocess stays optional and this
-        # module never becomes an import-time dependency of the web app's boot path.
         from scripts.api import gemini_mcp_client
 
         payload = gemini_mcp_client.pattern_lesson(
@@ -414,7 +399,7 @@ def teach(
             signal=signal.get("name", ""),
             context=context,
         )
-    except Exception as exc:  # noqa: BLE001 - any failure must still teach the lesson
+    except Exception as exc:  # noqa: BLE001
         log.warning("Gemini pattern lesson failed: %s: %s", type(exc).__name__, exc)
         payload = None
 
@@ -423,8 +408,6 @@ def teach(
 
     stored = {
         **payload,
-        # Identity and provenance are the caller's to fix, not the model's to invent: a
-        # hallucinated slug would silently break the progress panel that keys off it.
         "pattern": pattern.slug,
         "name": pattern.name,
         "family": pattern.family,
