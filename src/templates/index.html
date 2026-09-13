@@ -9,9 +9,9 @@
 </head>
 
 <body class="min-h-screen bg-ink text-white">
-    <div class="mx-auto w-full max-w-[1700px] px-6 py-10 text-[17px] 2xl:px-10">
+    <div class="mx-auto w-full max-w-[1700px] px-6 py-6 text-[17px] 2xl:px-10">
 
-        <header class="mb-10 flex flex-wrap items-center justify-between gap-6">
+        <header class="mb-6 flex flex-wrap items-center justify-between gap-6">
             <div class="flex items-center gap-3">
                 <span class="grid h-9 w-9 place-items-center rounded-full bg-brand">
                     <span class="h-3 w-3 rounded-full bg-ink"></span>
@@ -27,27 +27,6 @@
             </div>
         </header>
 
-        {% if stats and stats.known %}
-        <div class="mb-10 grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <div class="rounded-2xl border border-line bg-raised px-6 py-4">
-                <div class="text-xs uppercase tracking-widest text-dim">Symbols known</div>
-                <div class="mt-1 text-3xl font-semibold tabular-nums">{{ stats.known }}</div>
-            </div>
-            <div class="rounded-2xl border border-line bg-raised px-6 py-4">
-                <div class="text-xs uppercase tracking-widest text-dim">Tech names</div>
-                <div class="mt-1 text-3xl font-semibold tabular-nums">{{ stats.tech }}</div>
-            </div>
-            <div class="rounded-2xl border border-line bg-raised px-6 py-4">
-                <div class="text-xs uppercase tracking-widest text-dim">Ready to trade</div>
-                <div class="mt-1 text-3xl font-semibold tabular-nums">{{ stats.ingested }}</div>
-            </div>
-            <div class="rounded-2xl border border-line bg-raised px-6 py-4">
-                <div class="text-xs uppercase tracking-widest text-dim">Max per session</div>
-                <div class="mt-1 text-3xl font-semibold tabular-nums">{{ max_watchlist }}</div>
-            </div>
-        </div>
-        {% endif %}
-
         {% if not universe %}
         <div class="mb-10 rounded-3xl border border-warn/40 bg-warn/10 p-6 text-warn">
             The ticker catalog is empty. Load it and a starter set of prices first:
@@ -56,46 +35,53 @@
         </div>
         {% endif %}
 
-        <form id="start-form" class="grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-            <section class="rounded-3xl border border-line bg-surface p-8 xl:p-10">
-                <h1 class="max-w-3xl text-4xl font-bold leading-[1.1] tracking-tight sm:text-5xl">
-                    Pick a basket and replay the market.
-                </h1>
-                <p class="mt-6 max-w-2xl leading-relaxed text-muted">
-                    Choose the stocks you want to follow, take the clock as far back as the data
-                    goes, and trade any of them a day at a time. You get the signals traders
-                    actually watch, a private generated future when the real history runs out,
-                    and an AI coach that argues with your timing.
-                </p>
+        <!-- The title and its pitch run the full page width. Held inside the picker card they
+             pushed the picker itself most of a screen down the page. -->
+        <div class="mb-6">
+            <h1 class="text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
+                Pick a basket and replay the market.
+            </h1>
+            <p class="mt-2 leading-relaxed text-muted">
+                Choose the stocks you want to follow, take the clock as far back as the data goes,
+                and trade them a day at a time &mdash; with the signals traders actually watch, a
+                private generated future, and an AI coach that argues with your timing.
+            </p>
+        </div>
 
-                <div class="mt-10 flex flex-wrap items-center justify-between gap-3">
-                    <h2 class="text-xl font-semibold">1 &middot; Choose your stocks</h2>
+        <!-- Two columns from 1024px, not 1280px. On a laptop the picker and the settings used
+             to stack into one very tall column with an empty half-page beside it. -->
+        <form id="start-form" class="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+            <section class="rounded-3xl border border-line bg-surface p-6">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <h2 class="text-lg font-semibold">1 &middot; Choose your stocks</h2>
                     <div class="flex flex-wrap gap-2">
                         <button type="button" data-preset="tech"
-                            class="rounded-full border border-line-strong px-4 py-2 text-sm text-muted transition hover:border-brand hover:text-white">
+                            class="rounded-full border border-line-strong px-3 py-1.5 text-sm text-muted transition hover:border-brand hover:text-white">
                             Select tech
                         </button>
                         <button type="button" data-preset="clear"
-                            class="rounded-full border border-line-strong px-4 py-2 text-sm text-muted transition hover:border-down/60 hover:text-down">
+                            class="rounded-full border border-line-strong px-3 py-1.5 text-sm text-muted transition hover:border-down/60 hover:text-down">
                             Clear
                         </button>
                     </div>
                 </div>
 
                 <input type="search" id="filter" placeholder="Filter by symbol or company"
-                    class="mt-4 mb-4 w-full rounded-xl border border-line-strong bg-ink px-5 py-3 text-white outline-none placeholder:text-dim focus:border-brand">
+                    class="mt-3 mb-3 w-full rounded-xl border border-line-strong bg-ink px-4 py-2.5 text-white outline-none placeholder:text-dim focus:border-brand">
 
-                <div id="picker" class="max-h-[34rem] overflow-y-auto rounded-2xl border border-line">
+                <!-- The list is what scrolls, and its ceiling tracks the window: the picker,
+                     the basket and the settings all stay on one screen. -->
+                <div id="picker" class="max-h-[min(24rem,40vh)] overflow-y-auto rounded-2xl border border-line">
                     {% for sector, members in universe | groupby('sector') %}
                     <div data-sector-group>
-                        <div class="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface/95 px-4 py-2 backdrop-blur">
+                        <div class="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-surface/95 px-3 py-1.5 backdrop-blur">
                             <span class="text-xs font-semibold uppercase tracking-widest text-dim">{{ sector or 'Other' }}</span>
                             <button type="button" data-sector-all
                                 class="text-xs text-brand-soft transition hover:text-white">select all</button>
                         </div>
                         {% for row in members %}
                         <label data-row data-terms="{{ row.ticker | lower }} {{ row.company_name | lower }}"
-                            class="flex cursor-pointer items-center gap-3 border-b border-line/60 px-4 py-2.5 transition hover:bg-raised">
+                            class="flex cursor-pointer items-center gap-3 border-b border-line/60 px-3 py-2 transition hover:bg-raised">
                             <input type="checkbox" name="tickers" value="{{ row.ticker }}"
                                 data-tech="{{ 'true' if row.is_tech else 'false' }}"
                                 data-sector="{{ sector or 'Other' }}"
@@ -113,116 +99,143 @@
                     </div>
                     {% endfor %}
                 </div>
-                <p class="mt-3 text-sm text-dim">
+                <p class="mt-2 text-xs text-dim">
                     {{ universe | length }} symbols in the catalog. Ones without history are greyed
                     out &mdash; load them with <code class="font-mono text-xs">ingest_prices.py</code>.
                 </p>
+
+                <!-- The basket sits under the list it is picked from: choosing and confirming
+                     are the same decision, so they belong in the same card, and the running
+                     count reads on the same line as the heading. -->
+                <div class="mt-5 border-t border-line pt-5">
+                    <div class="flex flex-wrap items-baseline justify-between gap-2">
+                        <h2 class="text-lg font-semibold">2 &middot; Your basket</h2>
+                        <p id="selection-note" class="text-xs text-muted"></p>
+                    </div>
+                    <div id="chips" class="mt-3 flex min-h-14 flex-wrap content-start gap-2 rounded-xl border border-dashed border-line-strong p-2.5">
+                        <span id="chips-empty" class="text-sm text-dim">Nothing selected yet.</span>
+                    </div>
+                </div>
+
+                <!-- The commit button closes the column you have to fill in to start, instead
+                     of sitting at the foot of the settings column and adding its height to the
+                     taller of the two. -->
+                <button type="submit"
+                    class="mt-5 w-full rounded-full bg-brand py-3 text-base font-semibold transition hover:bg-brand-soft">
+                    Start trading
+                </button>
+                <p id="error" class="mt-3 hidden rounded-xl border border-down/40 bg-down/10 p-3 text-sm text-down"></p>
+                <p id="funding-note" class="mt-2 text-xs text-dim">
+                    Starting cash, bills and paychecks come from the Nessie customer you pick
+                    (<span class="font-mono">{{ funding_source }}</span>).
+                </p>
             </section>
 
-            <section class="space-y-6">
+            <section class="flex flex-col gap-4">
                 <!-- The one teal panel, mirroring the mock's highlight card. -->
-                <div class="rounded-3xl border border-accent/30 bg-gradient-to-br from-accent/30 via-accent/15 to-transparent p-7">
-                    <h2 class="text-2xl font-bold leading-tight">Keep trading when the real data runs out</h2>
-                    <p class="mt-3 text-sm leading-relaxed text-muted">
+                <div class="rounded-3xl border border-accent/30 bg-gradient-to-br from-accent/30 via-accent/15 to-transparent p-4">
+                    <h2 class="text-lg font-bold leading-snug">Keep trading when the real data runs out</h2>
+                    <p class="mt-1.5 text-sm leading-relaxed text-muted">
                         Fork every symbol in your basket into a private generated future, with
                         AI-invented headlines that actually move the candles. Nobody else's
                         history changes &mdash; only your run.
                     </p>
-                    <label class="mt-5 flex cursor-pointer items-start gap-3">
-                        <input type="checkbox" id="simulate_future" class="tick mt-1 h-5 w-5">
+                    <label class="mt-3 flex cursor-pointer items-center gap-3">
+                        <input type="checkbox" id="simulate_future" class="tick h-5 w-5">
                         <span class="text-sm font-semibold text-accent-soft">
                             Start my run with a generated future
                         </span>
                     </label>
                 </div>
 
-                <div class="rounded-3xl border border-line bg-surface p-7">
-                    <h2 class="mb-4 text-xl font-semibold">2 &middot; Your basket</h2>
-                    <div id="chips" class="flex min-h-16 flex-wrap content-start gap-2 rounded-xl border border-dashed border-line-strong p-3">
-                        <span id="chips-empty" class="text-sm text-dim">Nothing selected yet.</span>
+                <div class="rounded-3xl border border-line bg-surface p-4">
+                    <!-- Heading and presets share a line: four stacked rows of chrome cost more
+                         height than the fields they were framing. -->
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <h2 class="text-lg font-semibold">3 &middot; Time range</h2>
+                        <div class="flex flex-wrap gap-1.5">
+                            <button type="button" data-range="max"
+                                class="rounded-full border border-line-strong px-3 py-1 text-xs text-muted transition hover:border-brand hover:text-white">All history</button>
+                            <button type="button" data-range="10"
+                                class="rounded-full border border-line-strong px-3 py-1 text-xs text-muted transition hover:border-brand hover:text-white">Last 10y</button>
+                            <button type="button" data-range="3"
+                                class="rounded-full border border-line-strong px-3 py-1 text-xs text-muted transition hover:border-brand hover:text-white">Last 3y</button>
+                        </div>
                     </div>
-                    <p id="selection-note" class="mt-3 text-sm text-muted"></p>
-                </div>
-
-                <div class="rounded-3xl border border-line bg-surface p-7">
-                    <h2 class="mb-4 text-xl font-semibold">3 &middot; Time range</h2>
-                    <div class="mb-4 flex flex-wrap gap-2">
-                        <button type="button" data-range="max"
-                            class="rounded-full border border-line-strong px-4 py-1.5 text-sm text-muted transition hover:border-brand hover:text-white">All history</button>
-                        <button type="button" data-range="10"
-                            class="rounded-full border border-line-strong px-4 py-1.5 text-sm text-muted transition hover:border-brand hover:text-white">Last 10y</button>
-                        <button type="button" data-range="3"
-                            class="rounded-full border border-line-strong px-4 py-1.5 text-sm text-muted transition hover:border-brand hover:text-white">Last 3y</button>
-                    </div>
-                    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div class="mt-2 grid grid-cols-2 gap-3">
                         <div>
-                            <label class="mb-2 block text-xs uppercase tracking-wide text-dim" for="start_date">Start</label>
+                            <label class="mb-1 block text-xs uppercase tracking-wide text-dim" for="start_date">Start</label>
                             <input type="date" id="start_date" name="start_date"
-                                class="w-full rounded-xl border border-line-strong bg-ink px-4 py-3 text-white outline-none focus:border-brand">
+                                class="w-full rounded-xl border border-line-strong bg-ink px-3 py-2.5 text-white outline-none focus:border-brand">
                         </div>
                         <div>
-                            <label class="mb-2 block text-xs uppercase tracking-wide text-dim" for="end_date">End</label>
+                            <label class="mb-1 block text-xs uppercase tracking-wide text-dim" for="end_date">End</label>
                             <input type="date" id="end_date" name="end_date"
-                                class="w-full rounded-xl border border-line-strong bg-ink px-4 py-3 text-white outline-none focus:border-brand">
+                                class="w-full rounded-xl border border-line-strong bg-ink px-3 py-2.5 text-white outline-none focus:border-brand">
                         </div>
                     </div>
-                    <p id="range-note" class="mt-3 text-sm text-dim"></p>
+                    <p id="range-note" class="mt-2 text-xs text-dim"></p>
                 </div>
 
-                <div class="rounded-3xl border border-line bg-surface p-7">
-                    <div class="flex items-start justify-between gap-4">
-                        <div>
-                            <h2 class="mb-1 text-xl font-semibold">4 &middot; Finances (optional)</h2>
-                            <p class="mb-4 text-sm text-dim">
-                                Use the Nessie sandbox bank for income and bills, or run a pure stock
-                                simulation with a clean starting cash balance.
-                            </p>
-                        </div>
+                <div class="rounded-3xl border border-line bg-surface p-4">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <h2 class="text-lg font-semibold">4 &middot; Finances (optional)</h2>
                         <label class="flex shrink-0 cursor-pointer items-center gap-2 text-sm text-muted">
                             <input type="checkbox" id="finances-on" class="tick h-5 w-5" checked>
                             Nessie finances
                         </label>
                     </div>
-                    <div id="finance-settings">
-                        <div id="bank-profiles" class="space-y-3">
+                    <p class="mt-1 text-xs text-dim">
+                        Use the Nessie sandbox bank for income and bills, or run a pure stock
+                        simulation with a clean starting cash balance.
+                    </p>
+                    <div id="finance-settings" class="mt-2">
+                        <div id="bank-profiles" class="space-y-1.5">
                             <p class="text-sm text-dim">Loading bank customers&hellip;</p>
                         </div>
-                        <label class="mt-5 flex cursor-pointer items-start gap-3 border-t border-line pt-5">
-                            <input type="checkbox" id="salary-on" class="tick mt-1 h-5 w-5" checked>
-                            <span>
-                                <span class="block text-sm font-semibold">Get a paycheck every two weeks</span>
-                                <span class="block text-xs text-dim">Filled in from the customer's payroll deposits. Change it or switch it off.</span>
+                        <!-- Paycheck switch and amount on one row, with the arithmetic under it:
+                             three stacked rows for one optional number cost more height than the
+                             bank picker above them. -->
+                        <div class="mt-2 flex items-center gap-3 border-t border-line pt-2">
+                            <label class="flex min-w-0 flex-1 cursor-pointer items-start gap-3">
+                                <input type="checkbox" id="salary-on" class="tick mt-0.5 h-5 w-5" checked>
+                                <span class="min-w-0">
+                                    <span class="block text-sm font-semibold">Get a paycheck every two weeks</span>
+                                    <span class="block text-xs text-dim">Filled in from the customer's payroll deposits.</span>
+                                </span>
+                            </label>
+                            <span class="flex shrink-0 items-center gap-1">
+                                <span class="text-muted">$</span>
+                                <input type="number" id="salary-amount" step="any" value="0"
+                                    class="w-24 rounded-xl border border-line-strong bg-ink px-2.5 py-2 text-right tabular-nums text-white outline-none focus:border-brand disabled:opacity-40">
                             </span>
-                        </label>
-                        <div class="mt-3 flex flex-wrap items-center gap-3">
-                            <span class="text-muted">$</span>
-                            <input type="number" id="salary-amount" step="any" value="0"
-                                class="w-40 rounded-xl border border-line-strong bg-ink px-4 py-3 tabular-nums text-white outline-none focus:border-brand disabled:opacity-40">
-                            <span id="salary-note" class="text-sm text-dim"></span>
                         </div>
+                        <p id="salary-note" class="mt-1 text-xs text-dim"></p>
                     </div>
-                    <div id="pure-settings" class="hidden">
+                    <div id="pure-settings" class="mt-3 hidden">
                         <label class="block text-sm text-muted" for="initial-cash">Starting cash</label>
                         <div class="mt-2 flex items-center gap-3">
                             <span class="text-muted">$</span>
                             <input type="number" id="initial-cash" min="0" step="100" value="10000"
-                                class="w-44 rounded-xl border border-line-strong bg-ink px-4 py-3 tabular-nums text-white outline-none focus:border-brand">
+                                class="w-36 rounded-xl border border-line-strong bg-ink px-3 py-2.5 tabular-nums text-white outline-none focus:border-brand">
                         </div>
-                        <p class="mt-3 text-xs text-dim">No Nessie API calls, paychecks, or bills will affect this run.</p>
+                        <p class="mt-2 text-xs text-dim">No Nessie API calls, paychecks, or bills will affect this run.</p>
                     </div>
                 </div>
 
-                <button type="submit"
-                    class="w-full rounded-full bg-brand py-4 text-lg font-semibold transition hover:bg-brand-soft">
-                    Start trading
-                </button>
-                <p id="error" class="hidden rounded-xl border border-down/40 bg-down/10 p-4 text-down"></p>
-                <p id="funding-note" class="text-sm text-dim">
-                    Starting cash, bills and paychecks come from the Nessie customer you pick
-                    (<span class="font-mono">{{ funding_source }}</span>).
-                </p>
             </section>
         </form>
+
+        <!-- Catalog totals: true, but they say nothing about the run about to be set up, so
+             they sit under it as a footer rather than above it as a headline. -->
+        {% if stats and stats.known %}
+        <div class="mt-6 flex flex-wrap gap-x-8 gap-y-3 border-t border-line pt-4 text-xs text-dim">
+            <span>Symbols known <strong class="ml-1 font-semibold tabular-nums text-muted">{{ stats.known }}</strong></span>
+            <span>Tech names <strong class="ml-1 font-semibold tabular-nums text-muted">{{ stats.tech }}</strong></span>
+            <span>Ready to trade <strong class="ml-1 font-semibold tabular-nums text-muted">{{ stats.ingested }}</strong></span>
+            <span>Max per session <strong class="ml-1 font-semibold tabular-nums text-muted">{{ max_watchlist }}</strong></span>
+        </div>
+        {% endif %}
     </div>
 
     <script>
@@ -271,15 +284,15 @@
                 const paycheck = profile.paycheck;
                 const where = profile.city ? ` · ${esc(profile.city)}, ${esc(profile.state)}` : '';
                 return `
-                <label class="flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 transition ${on ? 'border-brand bg-brand/10' : 'border-line hover:border-line-strong'}">
-                    <input type="radio" name="bank-profile" value="${esc(profile.id)}" class="mt-1.5 accent-brand" ${on ? 'checked' : ''}>
+                <label class="flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-1.5 transition ${on ? 'border-brand bg-brand/10' : 'border-line hover:border-line-strong'}">
+                    <input type="radio" name="bank-profile" value="${esc(profile.id)}" class="accent-brand" ${on ? 'checked' : ''}>
                     <span class="min-w-0 flex-1">
                         <span class="flex items-baseline justify-between gap-3">
-                            <span class="font-semibold">${esc(profile.name)}</span>
-                            <span class="tabular-nums">${money(account.balance)}</span>
+                            <span class="text-sm font-semibold">${esc(profile.name)}</span>
+                            <span class="text-sm tabular-nums">${money(account.balance)}</span>
                         </span>
                         <span class="block truncate text-xs text-dim">${esc([account.nickname, account.type, account.number].filter(Boolean).join(' · '))}${where}</span>
-                        <span class="mt-1 block text-xs text-muted">${profile.bills.count} bills · ${money(profile.bills.monthly_total)} a month${paycheck ? ` · paid ${money(paycheck.amount)} every 2 weeks` : ' · no paycheck on file'}</span>
+                        <span class="block truncate text-xs text-muted">${profile.bills.count} bills · ${money(profile.bills.monthly_total)} a month${paycheck ? ` · paid ${money(paycheck.amount)} every 2 wks` : ' · no paycheck on file'}</span>
                     </span>
                 </label>`;
             }).join('');
