@@ -17,6 +17,7 @@ const charts = {
     basket: createBasketChart(document.getElementById('basket-chart')),
     equity: createEquityChart(document.getElementById('equity-chart')),
 };
+linkCrosshairs([charts.price, charts.rsi, charts.macd]);
 
 const el = (id) => document.getElementById(id);
 const money = (value) => value == null ? '—' : `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -322,7 +323,6 @@ function renderBank(state) {
 
 let newsSignature = null;
 let newsStories = [];
-let readerWasRunning = false;
 
 // Seconds of drift per headline. Per story, not for the whole strip, so the headlines move
 // at the same readable pace whether the run is a week old or a decade.
@@ -355,7 +355,7 @@ const newsRunWidth = () => newsRuns()[0]?.getBoundingClientRect().width || 0;
 
 // Held under the pointer, or while a story is open, the strip stops: a headline nobody can
 // click is just decoration.
-const newsPaused = () => newsHovered || readerOpen() || newsReducedMotion();
+const newsPaused = () => newsHovered || newsOpen() || newsReducedMotion();
 
 // The drift is driven here rather than by a CSS animation. A keyframe animation is a function
 // of wall-clock time against a track of a fixed length, so the moment a headline arrives the
@@ -391,11 +391,6 @@ function measureNews() {
     newsTrack().style.transform = `translate3d(${-newsOffset}px, 0, 0)`;
     startNewsDrift();
 }
-
-const READER_NOTE = 'This is a practice newswire. Headlines about big moves and unusual '
-    + 'volume are written from the real chart, the rest is invented company noise, and nothing '
-    + 'marks which is which - telling them apart before you trade on one is the exercise. Ask '
-    + 'yourself what this would have to change about the business for the price to care.';
 
 function storyChip(story, decorative = false) {
     // The repeat passes through the list are decoration: they are what makes the drift look
@@ -508,30 +503,92 @@ function renderNews(state) {
     if ((runs.length - 1) * newsPitch < viewport) buildNewsRuns(stories);
 }
 
-// --- reading a story ------------------------------------------------------
+// --- the daily ledger -----------------------------------------------------
 
-// Clicking a headline stops the clock: the whole point of a newswire is that you can read
-// it, and reading while six more days go by is not reading.
-function openStory(story) {
-    readerWasRunning = Boolean(timer);
+// Clicking the newswire stops the clock and opens the whole paper: the point of a newswire
+// is that you can read it, and reading while six more days go by is not reading.
+let newsEdition = null;
+
+const utcDate = (iso, options) => new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-US', { timeZone: 'UTC', ...options });
+const newsOpen = () => !el('news-overlay').classList.contains('hidden');
+
+async function openNews(day) {
+    const wasPlaying = Boolean(timer);
     pause();
-    el('reader-headline').textContent = story.headline;
-    el('reader-meta').textContent = `${story.ticker} · ${story.date}`;
-    el('reader-body').textContent = READER_NOTE;
-    el('reader-status').textContent = readerWasRunning
-        ? 'The clock is paused while you read.'
-        : 'The clock was already paused.';
-    el('news-reader').classList.remove('hidden');
-    el('news-viewport').classList.add('is-reading');
+    if (signalsOpen) setSignalsOpen(false);
+    el('news-resume').classList.toggle('hidden', !wasPlaying);
+    const overlay = el('news-overlay');
+    overlay.classList.remove('hidden');
+    overlay.classList.add('flex');
+    await loadEdition(day || latestState?.sim_date);
 }
 
-function closeStory({ resume = false } = {}) {
-    el('news-reader').classList.add('hidden');
-    el('news-viewport').classList.remove('is-reading');
+function closeNews(resume) {
+    const overlay = el('news-overlay');
+    overlay.classList.add('hidden');
+    overlay.classList.remove('flex');
     if (resume) play();
 }
 
-const readerOpen = () => !el('news-reader').classList.contains('hidden');
+async function loadEdition(day) {
+    const errorBox = el('news-error');
+    errorBox.classList.add('hidden');
+    el('news-body').classList.add('opacity-50');
+    try {
+        newsEdition = await call(`/api/session/${sessionId}/news${day ? `?date=${day}` : ''}`);
+        renderEdition(newsEdition);
+    } catch (error) {
+        errorBox.textContent = error.message;
+        errorBox.classList.remove('hidden');
+    } finally {
+        el('news-body').classList.remove('opacity-50');
+    }
+}
+
+function storyMeta(story) {
+    return `<span class="font-semibold text-muted">${esc(story.section)}</span><span>&middot;</span><span>${esc(story.source)}</span>`
+        + (story.ticker ? `<span>&middot;</span><span class="font-mono normal-case tracking-normal text-muted">${esc(story.ticker)}</span>` : '');
+}
+
+function renderEdition(edition) {
+    el('news-dateline').textContent = edition.date
+        ? utcDate(edition.date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+        : 'No editions yet';
+    el('news-date').innerHTML = edition.dates.map((day, index) => `
+        <option value="${day}" ${day === edition.date ? 'selected' : ''}>
+            ${utcDate(day, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}${index === 0 ? ' (today)' : ''}
+        </option>`).join('');
+    el('news-prev').disabled = !edition.previous;
+    el('news-next').disabled = !edition.next;
+
+    const lead = edition.lead;
+    el('news-lead').innerHTML = lead
+        ? `<div class="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-widest text-dim">${storyMeta(lead)}</div>
+           <h3 class="mt-2 font-serif text-3xl font-bold leading-tight sm:text-4xl">${esc(lead.headline)}</h3>
+           ${lead.body ? `<p class="mt-3 text-base leading-relaxed text-muted">${esc(lead.body)}</p>` : ''}`
+        : '<p class="text-muted">A quiet day. Nothing made the paper.</p>';
+
+    el('news-stories').innerHTML = edition.stories.map((story) => `
+        <article class="py-4">
+            <div class="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-widest text-dim">${storyMeta(story)}</div>
+            <h4 class="mt-1 text-lg font-semibold leading-snug">${esc(story.headline)}</h4>
+            ${story.body ? `<p class="mt-1 text-sm leading-relaxed text-muted">${esc(story.body)}</p>` : ''}
+        </article>`).join('');
+
+    el('news-bell').innerHTML = edition.closing_bell.length
+        ? edition.closing_bell.map((row) => `
+            <div class="flex items-baseline justify-between gap-3">
+                <span class="min-w-0">
+                    <span class="block font-mono font-semibold">${esc(row.ticker)}</span>
+                    <span class="block truncate text-xs text-dim">${esc(row.company)}</span>
+                </span>
+                <span class="shrink-0 text-right">
+                    <span class="block tabular-nums">${money(row.close)}</span>
+                    <span class="block text-xs tabular-nums ${toneFor(row.change_pct)}">${pct(row.change_pct)}</span>
+                </span>
+            </div>`).join('')
+        : '<p class="text-xs text-dim">No trading on this day.</p>';
+}
 
 function renderBasketNote(payload) {
     const series = payload.series || [];
@@ -1830,7 +1887,8 @@ const TOUR_STEPS = [
         body: 'Headlines about the stocks you picked drift along the top of the page as the clock '
             + 'runs. Most of it is noise - conference talks, office moves, routine filings - and a '
             + 'few stories actually matter. Nothing is labelled, so telling them apart is part of '
-            + 'the game. Click any headline and the clock stops so you can read it properly.',
+            + 'the game. Click the bar and the clock stops while you read the Daily Ledger - click a '
+            + 'headline to open the paper from that day.',
     },
     {
         target: 'pattern-list',
@@ -1940,15 +1998,22 @@ function endTour() {
 
 el('signals-toggle').addEventListener('click', () => setSignalsOpen(true));
 el('signals-open-btn').addEventListener('click', () => setSignalsOpen(true));
-el('reader-close').addEventListener('click', () => closeStory());
-el('reader-resume').addEventListener('click', () => closeStory({ resume: true }));
-// Delegated: the strip holds every story several times over, so the listener is on the track
-// rather than on buttons that are replaced whenever a headline arrives.
-el('news-track').addEventListener('click', (event) => {
+// Delegated: the strip holds every story several times over, so the listener is on the panel
+// rather than on buttons that are replaced whenever a headline arrives. A headline opens the
+// paper on its own day; anywhere else on the bar opens today's.
+el('news-panel').addEventListener('click', (event) => {
     const chip = event.target.closest('.news-chip');
-    if (!chip) return;
-    const story = newsStories.find((row) => row.id === chip.dataset.story);
-    if (story) openStory(story);
+    const story = chip && newsStories.find((row) => row.id === chip.dataset.story);
+    openNews(story?.date);
+});
+el('news-close').addEventListener('click', () => closeNews(false));
+el('news-done').addEventListener('click', () => closeNews(false));
+el('news-resume').addEventListener('click', () => closeNews(true));
+el('news-prev').addEventListener('click', () => newsEdition?.previous && loadEdition(newsEdition.previous));
+el('news-next').addEventListener('click', () => newsEdition?.next && loadEdition(newsEdition.next));
+el('news-date').addEventListener('change', (event) => loadEdition(event.target.value));
+el('news-overlay').addEventListener('click', (event) => {
+    if (event.target === el('news-overlay')) closeNews(false);
 });
 // The strip holds still under the pointer, so a passing headline can be caught and read. A
 // touch pointer reports a hover it never leaves, so it is left out of this.
@@ -1986,7 +2051,13 @@ document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     if (!el('tour-card').classList.contains('hidden')) endTour();
     else if (!el('coach-overlay').classList.contains('hidden')) closeCoach(false);
-    else if (readerOpen()) closeStory();
+    else if (newsOpen()) closeNews(false);
+});
+document.addEventListener('keydown', (event) => {
+    if (!newsOpen() || event.target.tagName === 'SELECT') return;
+    const day = event.key === 'ArrowLeft' ? newsEdition?.previous
+        : event.key === 'ArrowRight' ? newsEdition?.next : null;
+    if (day) loadEdition(day);
 });
 el('reinvest-toggle').addEventListener('change', async (event) => {
     const wanted = event.target.checked;

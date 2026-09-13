@@ -102,6 +102,10 @@
                 <div class="flex flex-wrap items-center justify-between gap-3">
                     <h2 class="text-lg font-semibold">1 &middot; Choose your stocks</h2>
                     <div class="flex flex-wrap gap-2">
+                        <button type="button" data-preset="random" title="Pick random stocks and random dates"
+                            class="rounded-full border border-accent/50 bg-accent/10 px-3 py-1.5 text-sm text-accent-soft transition hover:border-accent hover:text-white">
+                            Random
+                        </button>
                         <button type="button" data-preset="tech"
                             class="rounded-full border border-line-strong px-3 py-1.5 text-sm text-muted transition hover:border-brand hover:text-white">
                             Select tech
@@ -405,6 +409,13 @@
             return { first: firsts[firsts.length - 1], last: lasts[0] };
         }
 
+        // Random: 3 to 5 stocks, one per sector where possible, and a 6-month to 5-year
+        // stretch inside the dates every one of them has prices for.
+        const DAY_MS = 86400000;
+        const RANDOM_MIN_DAYS = 180;
+        const RANDOM_MAX_DAYS = 5 * 365;
+        let randomRange = null;
+
         function applyRange(chosen) {
             const bounds = boundsFor(chosen);
             if (!bounds) {
@@ -414,6 +425,23 @@
             }
             startInput.min = endInput.min = bounds.first;
             startInput.max = endInput.max = bounds.last;
+
+            // A random range only survives while it still fits the picked symbols; editing
+            // the picks afterwards falls back to the full shared range.
+            const randomFits = rangeMode === 'random' && randomRange
+                && randomRange.start >= bounds.first && randomRange.end <= bounds.last;
+            if (randomFits) {
+                startInput.value = randomRange.start;
+                endInput.value = randomRange.end;
+                const days = (Date.parse(endInput.value) - Date.parse(startInput.value)) / DAY_MS;
+                const years = Math.round(days / 365.25);
+                const length = days >= 365
+                    ? `about ${years} year${years === 1 ? '' : 's'}`
+                    : `about ${Math.max(1, Math.round(days / 30.4))} months`;
+                rangeNote.textContent = `Random dates: ${length}, from ${startInput.value} to ${endInput.value}.`;
+                return;
+            }
+            if (rangeMode === 'random') rangeMode = 'max';
 
             if (rangeMode === 'max') {
                 startInput.value = bounds.first;
@@ -431,6 +459,56 @@
             rangeNote.textContent = full
                 ? `Playing from the earliest date these symbols share (about ${span} years).`
                 : `About ${span} years, starting ${startInput.value}.`;
+        }
+
+        function shuffled(items) {
+            const copy = [...items];
+            for (let i = copy.length - 1; i > 0; i -= 1) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [copy[i], copy[j]] = [copy[j], copy[i]];
+            }
+            return copy;
+        }
+
+        function pickRandom() {
+            const pool = boxes().filter((box) => box.dataset.first && box.dataset.last);
+            if (!pool.length) return;
+            // A few tries, because a random mix can share too short a window to play.
+            for (let attempt = 0; attempt < 25; attempt += 1) {
+                const want = Math.min(MAX_WATCHLIST, pool.length, 3 + Math.floor(Math.random() * 3));
+                const order = shuffled(pool);
+                const picked = [];
+                const sectors = new Set();
+                for (const box of order) {
+                    if (picked.length < want && !sectors.has(box.dataset.sector)) {
+                        picked.push(box);
+                        sectors.add(box.dataset.sector);
+                    }
+                }
+                for (const box of order) {
+                    if (picked.length < want && !picked.includes(box)) picked.push(box);
+                }
+
+                const bounds = boundsFor(picked);
+                if (!bounds) continue;
+                const first = Date.parse(bounds.first);
+                const available = (Date.parse(bounds.last) - first) / DAY_MS;
+                if (available < RANDOM_MIN_DAYS) continue;
+
+                const length = Math.round(RANDOM_MIN_DAYS + Math.random() * (Math.min(RANDOM_MAX_DAYS, available) - RANDOM_MIN_DAYS));
+                const start = first + Math.floor(Math.random() * (available - length + 1)) * DAY_MS;
+                randomRange = {
+                    start: new Date(start).toISOString().slice(0, 10),
+                    end: new Date(start + length * DAY_MS).toISOString().slice(0, 10),
+                };
+                for (const box of boxes()) {
+                    box.checked = picked.includes(box);
+                    if (box.dataset.first) box.disabled = false;
+                }
+                rangeMode = 'random';
+                render();
+                return;
+            }
         }
 
         function render() {
@@ -463,6 +541,10 @@
         for (const button of document.querySelectorAll('[data-preset]')) {
             button.addEventListener('click', () => {
                 const preset = button.dataset.preset;
+                if (preset === 'random') {
+                    pickRandom();
+                    return;
+                }
                 for (const box of boxes()) {
                     if (!box.dataset.first) continue;
                     if (preset === 'clear') box.checked = false;

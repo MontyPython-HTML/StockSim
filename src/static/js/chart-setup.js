@@ -306,7 +306,8 @@ function createBasketChart(container) {
     const view = createView(container, { magnet: false });
     const legend = document.createElement('div');
     legend.className = 'mt-3 flex flex-wrap gap-2 text-xs tabular-nums';
-    container.after(legend);
+    // After the fixed-height stage, not inside it, or the chips spill over the note below.
+    (container.closest('.chart-stage') || container).after(legend);
 
     Object.assign(view, {
         legend,
