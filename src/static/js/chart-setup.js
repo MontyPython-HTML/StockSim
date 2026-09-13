@@ -50,31 +50,62 @@ function setChartCadence(ms) {
     tickMs = Number(ms) || 0;
 }
 
+// Whether the charts are gliding rather than stepping, which is what tells the page a preview
+// of the next day is worth fetching: below this cadence a tick lands before a slide could
+// finish, so a plot is redrawn to its new position and nobody is waiting on the data.
+function chartAnimates() {
+    return tickMs >= CONTINUOUS_MIN_MS;
+}
+
 // `moved` says whether anything already on the plot has to move: a day appended to the end
-// needs no animation, whereas a window that rolled or an axis that rescaled does.
-function draw(chart, moved) {
+// needs no animation, whereas a window that rolled or an axis that rescaled does. `appended`
+// counts days added at the end, which still have to be drawn - just without a slide. `fresh`
+// says this update brings elements that were not on the plot before - a day added to a chart
+// that is still filling up, or a whole new window after a focus change - and `plans` is the
+// axis re-fit the tick came with.
+function draw(chart, moved, appended = 0, fresh = false, plans = []) {
+    // Nothing moved and nothing was added, so there is nothing to redraw. Skipping is not
+    // just a saved frame: `update('none')` applies element values directly, so an update with
+    // no change behind it cuts a slide that is still in flight short and parks the curve at
+    // its destination. That is what the page's confirming update after a previewed tick is.
+    if (!moved && !appended && !plans.length) return;
     const animation = Chart.defaults.animation;
-    if (!moved || (tickMs > 0 && tickMs < CONTINUOUS_MIN_MS)) {
+    const animate = tickMs >= CONTINUOUS_MIN_MS;
+    const restep = () => {
         // Back to the stepped default, so the next thing that does animate - a pause, a single
         // day stepped by hand - is not left easing over the last fast tick's duration.
         animation.duration = STEP_DURATION;
         animation.easing = 'easeOutCubic';
+    };
+    const applyPlans = () => {
+        for (const [id, bounds] of plans) applyAxis(chart, id, bounds);
+    };
+
+    if (!animate || (fresh ? !plans.length : !moved)) {
+        // One instant update. An element that was not on the plot before has no previous
+        // position to move from, and Chart.js answers that by animating it in from off the
+        // panel - the fill sweeping up from the bottom edge like a curtain. A new day has to
+        // be drawn before anything animates, so when the chart is still filling up it lands
+        // on the axis as it is, and the re-fit below then carries it where it belongs.
+        applyPlans();
+        restep();
         chart.update('none');
         return;
     }
-    if (tickMs >= CONTINUOUS_MIN_MS) {
-        // Fill the entire gap between one day's data and the next. That gap is the tick, not
-        // the tick minus the request time: the request's own latency falls inside the
-        // interval, before the pan can start, so the following day's prices do not arrive
-        // until a whole tick after these ones did. Stopping short of that - this used to run
-        // at 85% - parks the curve for the tail of every second, which is what made new data
-        // arriving read as a hop rather than as the shape scrolling.
-        animation.duration = tickMs;
-        animation.easing = 'linear';
-    } else {
-        animation.duration = STEP_DURATION;
-        animation.easing = 'easeOutCubic';
+    if (fresh) {
+        restep();
+        chart.update('none');
     }
+    // The re-fit this tick came with is applied now and glides, carrying the new day with it
+    // rather than dragging it in from below. The window slides the whole gap between one
+    // day's data and the next - the tick, not the tick minus the request time: the request's
+    // own latency falls inside the interval, before the pan can start, so the next day's
+    // prices do not arrive until a whole tick after these ones did. Stopping short of that -
+    // this used to run at 85% - parks the curve for the tail of every second, which is what
+    // made new data arriving read as a hop rather than as the shape scrolling.
+    applyPlans();
+    animation.duration = tickMs;
+    animation.easing = 'linear';
     chart.update();
 }
 
@@ -243,7 +274,7 @@ function createEquityChart(canvas) {
 // window drops its oldest day. An update that only appended runs without animation, so
 // nothing already drawn moves at all.
 
-const drawn = new WeakMap();    // chart -> { labels: [...], columns: [{ index, values }] }
+const drawn = new WeakMap();    // chart -> { width, count, labels: [...], columns: [{ index, values }] }
 const pinned = new WeakMap();   // chart -> { axisId: { min, max } }
 // A tick adds a day or two; this only needs to cover a burst large enough to include a
 // deliberately skipped stretch, not an unbounded window.
@@ -260,7 +291,7 @@ function sameNumber(a, b) {
 // days appended. Returns null when that is not the case, which means start again from the
 // new data - a different symbol, a restarted session, a window that shrank.
 function overlapOf(held, labels, columns) {
-    const oldCount = held.labels.length;
+    const oldCount = held.count;
     if (!oldCount) return null;
     const limit = Math.min(oldCount, MAX_SHIFT);
     for (let drop = 0; drop <= limit; drop += 1) {
@@ -286,45 +317,81 @@ function overlapOf(held, labels, columns) {
     return null;
 }
 
-function applySeries(chart, labels, columns) {
+// How many slots the plot is divided into.
+//
+// A category axis spaces its slots evenly across the panel, so the slot count decides
+// where every point sits: adding one slot slides the whole curve sideways, and the widest
+// slide is on the first days, when a slot is a fifth of the panel. A session whose history
+// runs out before the window does - a symbol ingested over a couple of months, or a run
+// that starts on the first day of the data - is still filling up, and used to gain a slot
+// per tick. The backend answers each payload with the number of bars the session will ever
+// hold (`chart_capacity`), so the axis is given its final width on the very first draw and
+// never re-spaced. Slots past the data are blank and are filled in as the clock reaches
+// them. Without an answer, the width is just what is in hand - the old behaviour.
+function slotWidth(slots, count) {
+    return Math.max(1, Math.floor(Number(slots) || 0), count);
+}
+
+// Slots the clock has not reached are blank rather than dated: the axis should not claim a
+// day that has not been played, and a blank tick draws no label.
+function padLabels(labels, width) {
+    const padded = labels.slice();
+    while (padded.length < width) padded.push('');
+    return padded;
+}
+
+function applySeries(chart, labels, columns, slots) {
     const held = drawn.get(chart);
-    const step = held ? overlapOf(held, labels, columns) : null;
-    let appended = labels.length;
+    const width = slotWidth(slots, labels.length);
+    // A window longer than the width would only arrive if the capacity was wrong: the
+    // newest days are what the player is watching, so they are the ones drawn.
+    const trim = Math.max(0, labels.length - width);
+    const rows = trim ? labels.slice(trim) : labels;
+    const cols = trim
+        ? columns.map((c) => ({ index: c.index, values: c.values.slice(trim) }))
+        : columns;
+    const step = held && held.width === width ? overlapOf(held, rows, cols) : null;
+    let appended = rows.length;
     let reloaded = true;
     let shifted = 0;
 
     if (step) {
         // Edit the arrays the chart already holds rather than handing over new ones: those
         // are the arrays Chart.js built its elements from.
-        appended = labels.length - step.kept;
+        appended = rows.length - step.kept;
         shifted = step.drop;
         reloaded = false;
-        if (step.drop === appended) {
-            // The usual tick: the window slid by exactly the number of days it gained, so
-            // the length is unchanged and the old days are moved up with copyWithin. A
-            // splice would instead change the length, and Chart.js answers that by
-            // discarding every element it has and rebuilding the curve - which is the flicker
-            // this is here to avoid. Rotating keeps the elements, so each point just glides
-            // one slot left.
-            for (const column of columns) {
+        // The days already drawn move up by `drop` when the window slid - the usual tick,
+        // where the window is full and slid by exactly the number of days it gained. Moved
+        // with copyWithin rather than splice: a splice changes the array's length, and
+        // Chart.js answers a length change by discarding every element it has and rebuilding
+        // the curve, which is the flicker this is here to avoid. Kept at their length, each
+        // point simply glides one slot left.
+        const full = held.count === width;
+        if (step.drop) {
+            for (const column of cols) {
                 const target = chart.data.datasets[column.index].data;
-                if (step.drop) target.copyWithin(0, step.drop);
-                for (let i = step.kept; i < labels.length; i += 1) target[i] = column.values[i];
+                target.copyWithin(0, step.drop);
+                // Still filling up: the data is shorter than the axis, so the run keeps its
+                // own length and the slots after it stay empty.
+                if (!full) target.length = step.kept;
             }
-            if (step.drop) chart.data.labels.copyWithin(0, step.drop);
-            for (let i = step.kept; i < labels.length; i += 1) chart.data.labels[i] = labels[i];
-        } else {
-            chart.data.labels.splice(0, step.drop);
-            for (const column of columns) {
-                const target = chart.data.datasets[column.index].data;
-                target.splice(0, step.drop);
-                for (let i = step.kept; i < labels.length; i += 1) target.push(column.values[i]);
-            }
-            for (let i = step.kept; i < labels.length; i += 1) chart.data.labels.push(labels[i]);
+            chart.data.labels.copyWithin(0, step.drop);
         }
+        // The new days go into the slots after the ones already drawn, and while the chart
+        // is filling up that is the whole update: every day on the plot keeps its slot, its
+        // element and its value, so nothing moves and nothing is redrawn.
+        for (const column of cols) {
+            const target = chart.data.datasets[column.index].data;
+            for (let i = step.kept; i < rows.length; i += 1) target[i] = column.values[i];
+        }
+        for (let i = step.kept; i < rows.length; i += 1) chart.data.labels[i] = rows[i];
+        // The label count is what spaces the plot, so it is held at the axis's width: the
+        // slots the clock has not reached stay blank, and the spacing never changes.
+        while (chart.data.labels.length < width) chart.data.labels.push('');
     } else {
-        chart.data.labels = labels.slice();
-        for (const column of columns) {
+        chart.data.labels = padLabels(rows, width);
+        for (const column of cols) {
             chart.data.datasets[column.index].data = column.values.slice();
         }
         // A different window deserves a fresh fit rather than the old axis stretched to
@@ -332,11 +399,19 @@ function applySeries(chart, labels, columns) {
         pinned.delete(chart);
     }
 
+    const previous = held ? held.count : 0;
     drawn.set(chart, {
-        labels: labels.slice(),
-        columns: columns.map((c) => ({ index: c.index, values: c.values.slice() })),
+        width,
+        count: rows.length,
+        labels: chart.data.labels.slice(),
+        columns: cols.map((c) => ({
+            index: c.index,
+            values: chart.data.datasets[c.index].data.slice(),
+        })),
     });
-    return { appended, reloaded, shifted };
+    // `fresh` is what the draw needs to know: elements added where there were none, either
+    // the whole window after a reload or the newest days on a chart that is still filling up.
+    return { appended, reloaded, shifted, fresh: reloaded || rows.length > previous };
 }
 
 // Axis ends rounded out to a readable step. That rounding is also what keeps the plot still:
@@ -360,11 +435,15 @@ function niceBounds(lo, hi) {
     return bounds;
 }
 
-// Returns true when the axis actually had to move, which is the signal that the update is
-// not a plain append and should be animated after all.
-function pinAxis(chart, id, values, { zero = false, scale = 1, slack = 0.5 } = {}) {
+// Where the axis belongs for these values, or null when it should stay where it is.
+//
+// Planning and applying are two steps because the axis has to move *after* a new day has
+// been drawn. See draw(): an element that was not on the plot before has no position to
+// move from, so a re-fit that animated in the same update would drag it in from below the
+// panel with the fill sweeping up behind it. Planned now, applied once the new day is on.
+function planAxis(chart, id, values, { zero = false, scale = 1, slack = 0.5 } = {}) {
     const finite = values.filter((value) => Number.isFinite(value)).map((value) => value * scale);
-    if (!finite.length) return false;
+    if (!finite.length) return null;
     const lo = zero ? 0 : Math.min(...finite);
     const hi = Math.max(...finite);
     const wanted = niceBounds(lo, hi);
@@ -378,16 +457,31 @@ function pinAxis(chart, id, values, { zero = false, scale = 1, slack = 0.5 } = {
             // Widen, but only on the side that needs it, so the rest of the plot stays put.
             next = { min: Math.min(held.min, wanted.min), max: Math.max(held.max, wanted.max) };
         } else if (uses > slack) {
-            return false;
+            return null;
         }
     }
 
     const axis = chart.options.scales[id];
-    if (axis.min === next.min && axis.max === next.max) return false;
-    axis.min = next.min;
-    axis.max = next.max;
-    pinned.set(chart, { ...(pinned.get(chart) || {}), [id]: next });
-    return true;
+    if (axis.min === next.min && axis.max === next.max) return null;
+    return next;
+}
+
+function applyAxis(chart, id, bounds) {
+    const axis = chart.options.scales[id];
+    axis.min = bounds.min;
+    axis.max = bounds.max;
+    pinned.set(chart, { ...(pinned.get(chart) || {}), [id]: bounds });
+}
+
+// The axes this update moves, in the shape draw() takes them. Planned in one place so every
+// chart re-fits the same way, and applied by draw() rather than here - see planAxis.
+function axisPlans(chart, axes) {
+    const plans = [];
+    for (const [id, values, options] of axes) {
+        const bounds = planAxis(chart, id, values, options);
+        if (bounds) plans.push([id, bounds]);
+    }
+    return plans;
 }
 
 // Markers are keyed by position on the axis rather than by date, and a trade can land on a
@@ -425,24 +519,26 @@ function updateCharts(charts, state) {
         { index: 1, values: sma20 },
         { index: 2, values: sma50 },
         { index: 5, values: volumes },
-    ]);
+    ], state.chart_capacity);
     const marked = replacePoints(price.data.datasets[3], buys)
         + replacePoints(price.data.datasets[4], sells);
     // Every price on the plot decides the axis, markers included: a fill away from the
     // recent range would otherwise sit off the top or bottom of the panel.
-    const lifted = pinAxis(price, 'y', [...closes, ...sma20, ...sma50, ...buys.map((b) => b.y), ...sells.map((s) => s.y)]);
     // Volume bars are read against each other, so they only need a ceiling - and one that
     // holds still: recomputing it every tick resized every bar in the plot for one new bar.
-    const rescaled = pinAxis(price, 'volume', volumes, { zero: true, scale: 4, slack: 0.45 });
-    draw(price, result.reloaded || result.shifted || lifted || rescaled || marked);
+    const pricePlans = axisPlans(price, [
+        ['y', [...closes, ...sma20, ...sma50, ...buys.map((b) => b.y), ...sells.map((s) => s.y)], undefined],
+        ['volume', volumes, { zero: true, scale: 4, slack: 0.45 }],
+    ]);
+    draw(price, result.reloaded || result.shifted || marked, result.appended, result.fresh, pricePlans);
 
     const rsi = charts.rsi;
     const rsiOut = applySeries(rsi, labels, [
         { index: 0, values: rows.map((r) => r.rsi14) },
         { index: 1, values: labels.map(() => 70) },
         { index: 2, values: labels.map(() => 30) },
-    ]);
-    draw(rsi, rsiOut.reloaded || rsiOut.shifted);
+    ], state.chart_capacity);
+    draw(rsi, rsiOut.reloaded || rsiOut.shifted, rsiOut.appended, rsiOut.fresh);
 
     const macd = charts.macd;
     const hist = rows.map((r) => r.macd_hist);
@@ -450,12 +546,13 @@ function updateCharts(charts, state) {
         { index: 0, values: hist },
         { index: 1, values: rows.map((r) => r.macd) },
         { index: 2, values: rows.map((r) => r.macd_signal) },
-    ]);
+    ], state.chart_capacity);
     macd.data.datasets[0].backgroundColor = hist.map((value) =>
         (value ?? 0) >= 0 ? 'rgba(45,212,191,0.6)' : 'rgba(251,113,133,0.6)');
-    const macdAxis = pinAxis(macd, 'y', hist.concat(
-        rows.map((r) => r.macd), rows.map((r) => r.macd_signal)));
-    draw(macd, macdOut.reloaded || macdOut.shifted || macdAxis);
+    const macdPlans = axisPlans(macd, [
+        ['y', hist.concat(rows.map((r) => r.macd), rows.map((r) => r.macd_signal)), undefined],
+    ]);
+    draw(macd, macdOut.reloaded || macdOut.shifted, macdOut.appended, macdOut.fresh, macdPlans);
 }
 
 function updateBasketChart(chart, payload) {
@@ -493,9 +590,9 @@ function updateBasketChart(chart, payload) {
         const byDate = new Map(row.points.map((p) => [p.date, p.index]));
         return { index: i, values: labels.map((date) => (byDate.has(date) ? byDate.get(date) : null)) };
     });
-    const result = applySeries(chart, labels, columns);
-    const lifted = pinAxis(chart, 'y', columns.flatMap((c) => c.values), { slack: 0.45 });
-    draw(chart, result.reloaded || result.shifted || lifted);
+    const result = applySeries(chart, labels, columns, payload.chart_capacity);
+    const plans = axisPlans(chart, [['y', columns.flatMap((c) => c.values), { slack: 0.45 }]]);
+    draw(chart, result.reloaded || result.shifted, result.appended, result.fresh, plans);
 }
 
 function updateEquityChart(chart, payload) {
@@ -505,7 +602,7 @@ function updateEquityChart(chart, payload) {
     const result = applySeries(chart, labels, [
         { index: 0, values: net },
         { index: 1, values: labels.map(() => payload.starting_cash) },
-    ]);
-    const lifted = pinAxis(chart, 'y', net.concat(payload.starting_cash));
-    draw(chart, result.reloaded || result.shifted || lifted);
+    ], payload.chart_capacity);
+    const plans = axisPlans(chart, [['y', net.concat(payload.starting_cash), undefined]]);
+    draw(chart, result.reloaded || result.shifted, result.appended, result.fresh, plans);
 }

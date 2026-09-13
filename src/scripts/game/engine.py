@@ -183,6 +183,20 @@ def dividend_schedule(
     return schedule
 
 
+def _chart_capacity(source, end_date: date, window_days: int) -> int:
+    """How many slots this symbol's chart will ever need.
+
+    A session whose history runs out before the window does - a symbol ingested over a few
+    weeks, or a run that starts on the first day of the data - draws a chart that is still
+    filling up. The axis has to be told its final width on the first draw, because a
+    category axis spreads its slots evenly and a chart that gains a slot per tick slides
+    every point on the plot sideways with it. Counted off the calendar, so the answer does
+    not move as the clock runs; capped at the window, which is the most the chart ever
+    shows.
+    """
+    return max(1, min(window_days, price_source.bars_through(source, end_date)))
+
+
 def _quotes(session_id: str, tickers: list[str], sim_date: date) -> dict[str, dict]:
     """Last close at or before sim_date for each symbol, real or simulated.
 
@@ -273,6 +287,10 @@ def _state_from_bundle(
             "payments": len(bundle.get("dividends") or []),
         },
         "chart": indicators.to_series(history.tail(window_days)),
+        # How wide to draw the x axis, fixed for the session's life. See _chart_capacity.
+        "chart_capacity": _chart_capacity(
+            focus_source, _as_date(session["end_date"]), window_days
+        ),
         "trades": [
             {
                 "date": _as_date(t["trade_date"]).isoformat(),
@@ -313,6 +331,68 @@ def _state_from_bundle(
 
 def get_state(session_id: str, focus: str | None = None, window_days: int = DEFAULT_CHART_WINDOW) -> dict:
     return _state_from_bundle(database.load_session_bundle(session_id), focus, window_days)
+
+
+def peek_chart(
+    session_id: str,
+    focus: str | None = None,
+    days: int = 1,
+    window_days: int = DEFAULT_CHART_WINDOW,
+) -> dict:
+    """The chart the clock is about to reach, without moving the clock.
+
+    A chart's slide lasts a whole tick, and a tick that only learns its prices when the
+    advance request comes back spends the front half of that interval still: the curve then
+    has to cover the same ground in what is left, and it shows a day the header has already
+    left behind. Prices are not the player's doing, though - the calendar decides them, and
+    both kinds of session can answer for a day they have not reached yet (a replay reads the
+    ingested history, a simulated session generated its whole future up front and slices
+    it). So the page can fetch tomorrow's window today and start moving on time.
+
+    Deliberately read-only. Everything with a consequence - the ledger, the AI queue, the
+    status, the date itself - still moves only in advance_day; this walks the same trading
+    calendar so the two cannot disagree about which day comes next, and it asks for no more
+    than the window would cost anyway.
+    """
+    session = database.get_session(session_id)
+    if not session:
+        raise GameError("Session not found")
+    watchlist = database.session_tickers(session_id)
+    if not watchlist:
+        raise GameError("This session has no symbols. Start a new one.")
+    focus = focus.upper() if focus and focus.upper() in watchlist else watchlist[0]
+    empty = {"focus": focus, "sim_date": None, "chart": []}
+    if session["status"] != "active":
+        return empty
+
+    sources = price_source.for_watchlist(session, watchlist)
+    sim_date = _as_date(session["sim_date"])
+    end_date = _as_date(session["end_date"])
+    for _ in range(max(1, days)):
+        upcoming = [
+            day for day in (sources[ticker].next_trading_day(sim_date) for ticker in watchlist)
+            if day is not None and day <= end_date
+        ]
+        if not upcoming:
+            return empty
+        sim_date = min(upcoming)
+
+    # The generated future is only as long as it was rolled for, and reading past its end
+    # would extend it - a write in the middle of a read. The tick that actually reaches the
+    # end does the rolling, and the page falls back to asking for the window afterwards.
+    bounds = sources[focus].bounds()
+    if bounds and sim_date > bounds["last_day"]:
+        return empty
+
+    history = sources[focus].history_through(sim_date)
+    return {
+        "focus": focus,
+        "sim_date": sim_date.isoformat(),
+        "chart": indicators.to_series(history.tail(window_days)),
+        # Carried alongside the window so a peeked day is drawn into exactly the geometry
+        # the confirming response will use, whatever the page has cached.
+        "chart_capacity": _chart_capacity(sources[focus], end_date, window_days),
+    }
 
 
 # --- starting a run -------------------------------------------------------

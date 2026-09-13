@@ -135,6 +135,45 @@ html {
     }
 }
 
+/* Which chart is the big one. The panels are all the same card, so the one carrying
+   is-hero draws at the large stage size and the rest share the grid - clicking a small
+   graph hands the class over rather than growing the page another row. The click target is
+   the plot itself and the hint it reveals, so the notes under each chart stay selectable
+   text instead of hidden buttons. */
+@layer components {
+    .chart-card .chart-stage {
+        height: 300px;
+    }
+
+    .chart-card.is-hero .chart-stage {
+        height: 560px;
+    }
+
+    .chart-card:not(.is-hero) .chart-stage canvas {
+        cursor: pointer;
+    }
+
+    /* Only while the pointer is over a small panel (or a keyboard has landed on its
+       control): four permanent "enlarge" buttons would be more clutter than help. */
+    .chart-zoom-hint {
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 120ms ease;
+    }
+
+    .chart-card:not(.is-hero):hover .chart-zoom-hint,
+    .chart-card:not(.is-hero):focus-within .chart-zoom-hint {
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    /* The panel that is already large has nothing to enlarge, so its control is taken out
+       of the tab order rather than left invisible and focusable. */
+    .chart-card.is-hero .chart-zoom-hint {
+        display: none;
+    }
+}
+
 /* The newswire strip. The track holds the day's headlines once, repeated, so the loop can
    wrap without a visible jump. The drift itself comes from game.js rather than a keyframe
    animation: an animation is a function of wall-clock time against a track of a fixed

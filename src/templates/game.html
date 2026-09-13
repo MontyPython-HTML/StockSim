@@ -145,49 +145,66 @@
         <div class="grid grid-cols-1 gap-6 lg:grid-cols-5">
 
             <section class="grid grid-cols-1 content-start gap-6 lg:col-span-5 2xl:col-span-3">
-                <div class="rounded-3xl border border-line bg-surface p-6">
-                    <div class="mb-4 flex flex-wrap items-baseline justify-between gap-3">
+                <!-- Every chart panel is the same card, and whichever one is marked is-hero
+                     is drawn at the large stage size. Clicking a small graph hands the class
+                     over (see setupHeroChart), so the panel a player cares about can be the
+                     big one without the layout changing shape. -->
+                <div data-chart="price" class="chart-card is-hero rounded-3xl border border-line bg-surface p-6">
+                    <div class="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
                         <h2 class="text-lg font-semibold">
                             <span id="focus-label" class="font-mono">&mdash;</span>
                             <span id="focus-name" class="ml-2 font-normal text-dim"></span>
                         </h2>
-                        <div class="flex items-baseline gap-3">
+                        <!-- Everything the header puts on the right lives in one cluster, so the
+                             controls travel with it when the row has to wrap instead of being
+                             left behind on a line of their own. -->
+                        <div data-chart-controls class="ml-auto flex flex-wrap items-baseline justify-end gap-x-3 gap-y-2">
                             <span class="text-sm text-dim">Last close</span>
                             <span id="current-price" class="text-2xl font-semibold tabular-nums">&mdash;</span>
                             <span id="current-change" class="text-lg font-semibold tabular-nums">&mdash;</span>
                         </div>
                     </div>
-                    <div class="h-[560px]"><canvas id="price-chart"></canvas></div>
+                    <div class="chart-stage"><canvas id="price-chart"></canvas></div>
                 </div>
 
                 <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                    <div data-collapse="rsi" class="rounded-3xl border border-line bg-surface p-6">
-                        <h2 class="mb-3 text-lg font-semibold">RSI (14)</h2>
-                        <div class="h-[300px]"><canvas id="rsi-chart"></canvas></div>
+                    <div data-collapse="rsi" data-chart="rsi" class="chart-card rounded-3xl border border-line bg-surface p-6">
+                        <div class="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                            <h2 class="text-lg font-semibold">RSI (14)</h2>
+                            <div data-chart-controls class="ml-auto flex items-center gap-2"></div>
+                        </div>
+                        <div class="chart-stage"><canvas id="rsi-chart"></canvas></div>
                     </div>
-                    <div data-collapse="macd" class="rounded-3xl border border-line bg-surface p-6">
-                        <h2 class="mb-3 text-lg font-semibold">MACD (12, 26, 9)</h2>
-                        <div class="h-[300px]"><canvas id="macd-chart"></canvas></div>
+                    <div data-collapse="macd" data-chart="macd" class="chart-card rounded-3xl border border-line bg-surface p-6">
+                        <div class="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                            <h2 class="text-lg font-semibold">MACD (12, 26, 9)</h2>
+                            <div data-chart-controls class="ml-auto flex items-center gap-2"></div>
+                        </div>
+                        <div class="chart-stage"><canvas id="macd-chart"></canvas></div>
                     </div>
                 </div>
 
                 <!-- The two portfolio views: what the basket did relative to itself, and
                      what the account is actually worth. -->
                 <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                    <div data-collapse="basket" class="rounded-3xl border border-line bg-surface p-6">
-                        <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+                    <div data-collapse="basket" data-chart="basket" class="chart-card rounded-3xl border border-line bg-surface p-6">
+                        <div class="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
                             <h2 class="text-lg font-semibold">Basket, rebased to 100</h2>
-                            <span id="basket-window" class="text-xs text-dim"></span>
+                            <div data-chart-controls class="ml-auto flex flex-wrap items-baseline justify-end gap-x-3 gap-y-2">
+                                <span id="basket-window" class="text-xs text-dim"></span>
+                            </div>
                         </div>
-                        <div class="h-[300px]"><canvas id="basket-chart"></canvas></div>
+                        <div class="chart-stage"><canvas id="basket-chart"></canvas></div>
                         <p id="basket-note" class="mt-3 text-xs leading-relaxed text-dim"></p>
                     </div>
-                    <div data-collapse="equity" class="rounded-3xl border border-line bg-surface p-6">
-                        <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+                    <div data-collapse="equity" data-chart="equity" class="chart-card rounded-3xl border border-line bg-surface p-6">
+                        <div class="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
                             <h2 class="text-lg font-semibold">Account equity</h2>
-                            <span id="equity-note" class="text-xs text-dim"></span>
+                            <div data-chart-controls class="ml-auto flex flex-wrap items-baseline justify-end gap-x-3 gap-y-2">
+                                <span id="equity-note" class="text-xs text-dim"></span>
+                            </div>
                         </div>
-                        <div class="h-[300px]"><canvas id="equity-chart"></canvas></div>
+                        <div class="chart-stage"><canvas id="equity-chart"></canvas></div>
                         <p class="mt-3 text-xs leading-relaxed text-dim">
                             Cash plus open positions, day by day. This is the line that matters:
                             a basket can be full of winners while the account is flat.

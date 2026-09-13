@@ -58,6 +58,10 @@ let basketSignature = null;
 const FEED_REFRESH_MS = 5000;
 let feedTimer = null;
 
+// How soon after a tick the window for the next one is asked for. It is not on the tick's
+// critical path - the next tick is a whole second away and this answer takes a tenth of one.
+const AHEAD_REFRESH_MS = 0;
+
 // Teacher mode: the lesson a tick queues arrives seconds later on a worker thread, so the
 // page stops the clock immediately, opens the card in a waiting state, and polls until the
 // lesson lands. `shownLessons` stops a lesson already taught from re-opening every time the
@@ -558,6 +562,8 @@ function render(state) {
 
     el('focus-label').textContent = state.focus;
     el('focus-name').textContent = companyNames[state.focus] || '';
+    // The hint names whichever symbol the price chart is showing, so it follows the focus.
+    if (priceHint) priceHint.setAttribute('aria-label', `Show the ${state.focus} price chart large`);
 
     const quote = state.quotes.find((row) => row.ticker === state.focus) || {};
     el('current-price').textContent = money(quote.close);
@@ -581,6 +587,9 @@ function render(state) {
     renderFeed(state.ai_feed);
     renderNews(state);
     renderPatterns(state.patterns);
+    // Every path that can change the chart's focus or date comes through here, so this is the
+    // one place that has to know the next window is now stale.
+    if (timer) scheduleAhead();
 
     if (state.status === 'finished') finish(state);
 }
@@ -892,6 +901,57 @@ function scheduleFeedRefresh(delay = FEED_REFRESH_MS) {
     }, delay);
 }
 
+// --- the day ahead ---------------------------------------------------------
+//
+// A chart's slide lasts the whole tick, so a tick that only learns its prices when the
+// advance request returns spends the front half of that interval standing still: the curve
+// then covers the same ground in what is left, and by the time it arrives the window it is
+// showing belongs to the date the header has already left behind. Prices are the one thing
+// here the player cannot influence - the calendar decides them - so tomorrow's window is
+// fetched while today plays out, and the slide starts the moment the tick does.
+
+let aheadChart = null;
+let aheadInFlight = false;
+let aheadTimer = null;
+
+function scheduleAhead(delay = AHEAD_REFRESH_MS) {
+    if (aheadTimer !== null) return;
+    aheadTimer = setTimeout(() => {
+        aheadTimer = null;
+        refreshAhead();
+    }, delay);
+}
+
+async function refreshAhead() {
+    // Only while the charts are gliding: stopped, or at a speed that steps whole days at a
+    // time, nothing is waiting on it and a preview would only be a request.
+    if (!timer || aheadInFlight || !chartAnimates()) return;
+    aheadInFlight = true;
+    try {
+        const payload = await call(`/api/session/${sessionId}/ahead?focus=${focus}`);
+        // A finished session, or a focus the server did not recognise, comes back empty.
+        aheadChart = payload.chart && payload.chart.length ? payload : null;
+    } catch (error) {
+        // An optimisation that cannot fail the clock: without it the tick simply reads its
+        // prices from the advance response, as it did before.
+        aheadChart = null;
+        console.error(error);
+    } finally {
+        aheadInFlight = false;
+    }
+}
+
+// Start the charts moving on the window this tick is about to reach. The advance response
+// that follows carries exactly these dates, so the update it triggers finds nothing to draw
+// and the early start is confirmed rather than corrected.
+function panAhead() {
+    const ahead = aheadChart;
+    aheadChart = null;
+    if (!ahead || !latestState || ahead.focus !== focus) return;
+    if (!(ahead.sim_date > latestState.sim_date)) return;
+    updateCharts(charts, { ...latestState, chart: ahead.chart });
+}
+
 async function advance(days = 1) {
     if (inFlight) return;
     inFlight = true;
@@ -954,6 +1014,9 @@ function play() {
     const tick = async () => {
         if (!timer) return;
         const started = performance.now();
+        // Tomorrow's prices are already in hand, so the charts start moving on this tick
+        // rather than on whatever the request below takes to come back.
+        panAhead();
         await advance(speed.days);
         if (!timer) return;
         const spent = performance.now() - started;
@@ -973,6 +1036,11 @@ function pause() {
     timer = null;
     // Stopped, a step is a single deliberate move, so the charts go back to the short ease.
     setChartCadence(0);
+    // The clock is no longer moving on its own, so a window fetched for the next tick has
+    // nothing left to start: the next render after a step asks for a fresh one.
+    aheadChart = null;
+    clearTimeout(aheadTimer);
+    aheadTimer = null;
     el('play-btn').textContent = 'Play';
     el('play-btn').className = PRIMARY;
     setStatus('Paused', false);
@@ -1199,9 +1267,11 @@ function setupCollapsibles() {
         let header = card.firstElementChild;
         if (!header) continue;
 
-        // Cards whose title is a bare heading (the two indicator panels) get a header row of
-        // their own, so the toggle has somewhere sensible to sit instead of inside the <h2>.
-        if (heading && !header.contains(heading)) {
+        // A card whose first child *is* the heading (a title with no header row around it)
+        // gets a row of its own, so the toggle has somewhere sensible to sit instead of being
+        // appended inside the <h2> - where it would join the heading's own accessible name and
+        // read out as "MACD (12, 26, 9) Hide".
+        if (heading && header === heading) {
             const row = document.createElement('div');
             row.className = 'mb-3 flex items-center justify-between gap-3';
             card.insertBefore(row, heading);
@@ -1219,7 +1289,9 @@ function setupCollapsibles() {
         toggle.className = 'collapse-toggle ml-auto flex shrink-0 items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-dim transition hover:border-muted hover:text-white';
         toggle.innerHTML = '<span class="collapse-label">Hide</span>'
             + '<svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5l4-4" /></svg>';
-        header.appendChild(toggle);
+        // Into the header's control cluster when the card has one, so the fold toggle and the
+        // enlarge hint stay a single group at the end of the row.
+        (card.querySelector('[data-chart-controls]') || header).appendChild(toggle);
 
         const setCollapsed = (collapsed) => {
             card.classList.toggle('card-collapsed', collapsed);
@@ -1360,6 +1432,108 @@ function setupReorder() {
             grip.focus();
         });
     }
+}
+
+// --- which chart is the big one -------------------------------------------
+
+// The dashboard draws one graph large and four small, and which one should be large is not
+// the same answer for everyone: a player learning to read momentum wants the RSI panel big,
+// someone watching their money wants the equity curve. Rather than a setting to go and find,
+// clicking a small graph swaps it with the large one.
+//
+// The cards move, not the canvases inside them. A card carries its own title, notes and
+// folded state wherever it lands, and a canvas that had been rebuilt would be a new element
+// with no chart drawn on it. The choice is remembered per browser, the way the folded cards
+// and their order are.
+const HERO_KEY = 'tradingTeacher.heroChart';
+const CHART_KEYS = ['price', 'rsi', 'macd', 'basket', 'equity'];
+// How each panel is named to a screen reader. The price panel's heading is filled in from the
+// session's focus symbol - a dash at setup time - so it is named here instead.
+const CHART_LABELS = { price: 'price', basket: 'basket', equity: 'account equity' };
+let priceHint = null;
+
+function heroCard() {
+    return document.querySelector('.chart-card.is-hero');
+}
+
+function cardForChart(name) {
+    return document.querySelector(`.chart-card[data-chart="${name}"]`);
+}
+
+function storedHero() {
+    try {
+        const name = localStorage.getItem(HERO_KEY);
+        return CHART_KEYS.includes(name) ? name : CHART_KEYS[0];
+    } catch {
+        return CHART_KEYS[0];
+    }
+}
+
+function promoteChart(name) {
+    const card = cardForChart(name);
+    const hero = heroCard();
+    if (!card || !hero || card === hero) return;
+
+    // Swap the two panels where they stand. A comment holds the first one's place while the
+    // second takes it, so neither card is ever detached for long enough to lose its canvas.
+    const marker = document.createComment('chart-swap');
+    hero.replaceWith(marker);
+    card.replaceWith(hero);
+    marker.replaceWith(card);
+    hero.classList.remove('is-hero');
+    card.classList.add('is-hero');
+
+    // A folded panel would take the big stage and stay hidden inside it.
+    const fold = card.querySelector('.collapse-toggle');
+    if (card.classList.contains('card-collapsed') && fold) fold.click();
+
+    // Both canvases are in a differently sized box now, and Chart.js sizes itself from the
+    // box it is given rather than from the window.
+    for (const other of [name, hero.dataset.chart]) {
+        if (charts[other]) charts[other].resize();
+    }
+    try {
+        localStorage.setItem(HERO_KEY, name);
+    } catch { /* private mode */ }
+}
+
+function setupHeroChart() {
+    for (const card of document.querySelectorAll('.chart-card')) {
+        const name = card.dataset.chart;
+        if (!name || !charts[name]) continue;
+
+        // Read the title off a copy with the card's own controls taken out. The heading holds
+        // the fold toggle (and, once this runs, the hint), so the raw textContent would name
+        // the panel "RSI (14)EnlargeHide".
+        const title = card.querySelector('h2')?.cloneNode(true);
+        if (title) for (const control of title.querySelectorAll('button')) control.remove();
+        const label = CHART_LABELS[name]
+            || (title?.textContent || '').replace(/\s+/g, ' ').trim()
+            || name;
+        const hint = document.createElement('button');
+        hint.type = 'button';
+        hint.className = 'chart-zoom-hint shrink-0 items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-dim transition hover:border-muted hover:text-white';
+        hint.innerHTML = '<span>Enlarge</span>'
+            + '<svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 2.5h-4v4M9.5 13.5h4v-4M2.5 2.5l4.5 4.5M13.5 13.5 9 9"/></svg>';
+        hint.setAttribute('aria-label', `Show the ${label} chart large`);
+        // In the header, ahead of the fold toggle, so the two controls sit together at the end
+        // of the row the way the grip does on the utility cards. The click it raises bubbles
+        // to the card, so the button itself needs no handler.
+        const header = card.firstElementChild;
+        const controls = card.querySelector('[data-chart-controls]') || header;
+        if (controls) controls.insertBefore(hint, controls.querySelector('.collapse-toggle'));
+        if (name === 'price') priceHint = hint;
+
+        card.addEventListener('click', (event) => {
+            // The plot and the hint are the targets; the notes under a chart stay selectable
+            // text rather than a hidden button.
+            if (!event.target.closest('.chart-stage, .chart-zoom-hint')) return;
+            promoteChart(name);
+        });
+    }
+
+    const remembered = storedHero();
+    if (remembered !== CHART_KEYS[0]) promoteChart(remembered);
 }
 
 // --- the walkthrough ------------------------------------------------------
@@ -1802,6 +1976,7 @@ async function checkAI() {
 
     setupCollapsibles();
     setupReorder();
+    setupHeroChart();
     await loadCompanyNames();
     checkAI();
     render(await call(`/api/session/${sessionId}/state`));

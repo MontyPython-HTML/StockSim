@@ -18,6 +18,21 @@ import pandas as pd
 from scripts.database import database
 from scripts.game import price_cache, simulation
 
+# Before any listing in the catalog, so counting every bar up to a day needs no second
+# lookup for the series' own first day. price_cache loads from the same kind of bound.
+FIRST_BAR = date(1800, 1, 1)
+
+
+def bars_through(source: "RealSource | SimulatedSource", day: date) -> int:
+    """How many bars a symbol has at or before `day`, without reading them.
+
+    Counted off the calendar rather than the frame, so a caller can ask about a day the
+    clock has not reached yet. That is what lets a session be told how many days it will
+    ever chart - and therefore what width to give the x axis - without generating a
+    simulated future or walking the clock to find out.
+    """
+    return max(0, source.trading_days_between(FIRST_BAR, day))
+
 
 class RealSource:
     """Real history, shared across sessions and cached per ticker by price_cache."""

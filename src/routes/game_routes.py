@@ -250,6 +250,24 @@ def session_state(session_id: str):
     )
 
 
+@api.get("/session/<session_id>/ahead")
+def session_ahead(session_id: str):
+    """The chart window the clock is about to reach, so the page can start its slide early.
+
+    Read-only by construction: it moves no ledger, no date and no AI queue. See
+    engine.peek_chart for why the page wants tomorrow's prices today.
+    """
+    return jsonify(
+        engine.peek_chart(
+            session_id,
+            focus=_focus_argument({}),
+            days=_day_count(request.args.get("days")),
+            window_days=_optional_int(request.args.get("window"), "window")
+            or engine.DEFAULT_CHART_WINDOW,
+        )
+    )
+
+
 @api.post("/session/<session_id>/dividends")
 def dividends(session_id: str):
     """Switch future dividends between cash and automatic reinvestment."""

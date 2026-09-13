@@ -208,10 +208,23 @@ def basket(
     axis = sorted(dates)
     series.sort(key=lambda row: (row["change_pct"] is None, -(row["change_pct"] or 0)))
 
+    # The equity and basket panels share one axis, and it grows with the symbols' own
+    # history: a session whose names have only a few weeks of bars plots a line that is
+    # still filling up. Same fix as the price chart's - tell the page how many slots the
+    # axis will ever need, so it does not have to re-space the plot every tick. The union
+    # of several calendars is at most as long as the longest of them, so the longest is
+    # the answer here; a name that trades on days another does not can only widen it.
+    end_date = _as_date(session["end_date"])
+    capacity = max(
+        (price_source.bars_through(source, end_date) for source in sources.values()),
+        default=1,
+    )
+
     return {
         "session_id": str(session["id"]),
         "sim_date": sim_date.isoformat(),
         "window_days": window,
+        "chart_capacity": max(1, min(window, capacity)),
         "series": series,
         "equity": equity_curve(session, trades, frames, axis, expenses),
         "starting_cash": float(session["starting_cash"]),

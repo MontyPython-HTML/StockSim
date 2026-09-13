@@ -114,6 +114,7 @@ Several endpoints return the same shape — the full current state of one game s
 Notes:
 - `today` and `chart` come from [indicators.py](../src/scripts/game/indicators.py) — see that file (or ask about "predictors") for what `sma20`/`sma50`/`rsi14`/`macd*` mean.
 - `chart` is a rolling window (default last 180 trading days through `sim_date`), meant for feeding straight into a chart library.
+- `chart_capacity` is how many slots that window will ever hold — the number of bars the session can chart in total, capped at the window size — and it does not change as the clock runs. A chart library spreads a category axis evenly across its panel, so the *count* of slots decides where every point sits; a run that starts before the symbol has a window's worth of history would otherwise re-space the plot on every tick. Give the axis this width on the first draw and fill it as the days arrive (`GET /basket` carries the same field for the equity/basket panels).
 - `ai_feed` entries are whatever the Gemini MCP server (or the local event generator) has logged so far for this session. `type` is `"PREDICTION"`, `"NEWS_EVENT"`, `"MARKET_SHOCK"`, or `"PATTERN_LESSON"` — see [server.py](../src/mcp_server/server.py). A `MARKET_SHOCK` payload carries `bars_affected`, the number of generated sessions its headline actually moved; a `PATTERN_LESSON` payload carries `pattern` (the slug), `what_it_is`/`how_to_spot`/`why_it_matters`/`common_mistake`/`watch_next`, `context` (the indicator readings it was written against), and `source` (`"gemini"` or `"offline"`).
 - `patterns` is the whole syllabus in teaching order, each row marked with whether this session has been taught it, how many times, and the first bar and symbol that taught it. See [patterns.py](../src/scripts/game/patterns.py).
 - `signals` and `pending_ai` are only present on the `/advance` response: `signals` are the patterns that printed on the bars the clock just walked, and `pending_ai` is what was queued for the background workers (AI runs off the request path, so its output lands in `ai_feed` on a later tick).
@@ -178,6 +179,39 @@ Fetches the current state of a session — used to resync the page on load/reloa
 **Response `200`** — the [session state object](#the-session-state-object).
 
 **Errors (`400`)** — `Session not found` if the id doesn't exist.
+
+---
+
+## `GET /api/session/<session_id>/ahead`
+
+The chart window the clock is *about to* reach, without moving the clock. The page fetches
+it while the current day plays out so the chart can start sliding the moment the next tick
+begins, instead of waiting out the `advance` round trip. Read-only: no ledger row, no AI job,
+no date and no status is touched.
+
+**Query parameters**
+- `focus` — optional, the symbol to window. Falls back to the first in the watchlist.
+- `days` — optional, default `1`, how far ahead to look (a session stepping three days at a
+time asks for three).
+- `window` — optional, default `180`, same meaning as on `/state`.
+
+**Response `200`**
+```json
+{
+  "focus": "AAPL",
+  "sim_date": "2023-03-14",
+  "chart": [{ "date": "2023-03-14", "close": 152.3, "sma20": 149.9, "volume": 61000000, "...": "..." }],
+  "chart_capacity": 180
+}
+```
+- `chart_capacity` — the same width `/state` reports, so a previewed day is drawn into the
+  geometry the confirming response will use.
+- `chart` — the same series `/state` returns, for the day `advance` would move to. When the
+  clock has run past the session's last day, or a generated future has not been rolled that
+  far, both fields come back `null`/empty and the caller falls back to reading the advance
+  response.
+
+**Errors (`400`)** — `Session not found`.
 
 ---
 
@@ -458,6 +492,7 @@ bar also gets a volume spike.
 | GET    | `/api/session/<id>/simulation`     | Fork parameters, bounds, applied shocks    |
 | POST   | `/api/session/<id>/shock`          | Inject one specific market event           |
 | GET    | `/api/session/<id>/basket`         | Rebased basket comparison + equity curve   |
+| GET    | `/api/session/<id>/ahead`          | The chart window the next tick will reach  |
 
 ---
 
@@ -482,6 +517,14 @@ things keep a clock tick cheap, and each one is a contract worth preserving:
   and the result lands in `mcp_events`, so it shows up in `ai_feed` on a later tick. The
   frontend relies on that: it does not poll while the clock is running, because the next
   `advance` response already carries the updated feed.
+- **Prices are asked for one tick early.** At 0.5x and 1x the page calls
+  `GET /api/session/<id>/ahead` about 130ms after a tick and starts the chart's slide on the
+  result, so the curve is moving from the first frame of the interval rather than from the
+  moment the `advance` response lands (~450ms in). `peek_chart` walks the same trading
+  calendar as `advance_day` over the same price sources, so the two cannot disagree about
+  which day comes next — `scripts/checks/smoke_ahead.py` asserts they return the identical
+  window, for a replay and a generated future alike. It never writes: a window past the end
+  of a rolled future comes back empty instead of extending the horizon.
 
 Handlers that already hold a session bundle should pass what it contains —
 `price_source.for_watchlist(session, bundle["watchlist"])` and
