@@ -245,3 +245,18 @@ CREATE TABLE IF NOT EXISTS dividend_payments (
 
 CREATE INDEX IF NOT EXISTS idx_dividend_payments_session
     ON dividend_payments (session_id, ex_date);
+
+-- Dividends can be taken as cash or rolled straight back into the shares that paid them.
+-- The choice sits on the session because it changes what a tick does, not just how the
+-- page draws it: one credits cash, the other buys stock.
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS reinvest_dividends BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- A reinvested dividend is a purchase, so it belongs in the trade ledger beside every
+-- other one - otherwise the position and the ledger disagree about how many shares the
+-- player owns, and the next dividend would be paid on a number that was never bought.
+-- Flagged so the page can label it as the payout it is rather than a trade the player made.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS reinvested BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- What a reinvestment bought, so the payment row still explains itself after the fact.
+ALTER TABLE dividend_payments ADD COLUMN IF NOT EXISTS reinvested_shares NUMERIC(18,6) NOT NULL DEFAULT 0;
+ALTER TABLE dividend_payments ADD COLUMN IF NOT EXISTS reinvest_price NUMERIC(14,4);

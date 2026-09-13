@@ -24,6 +24,17 @@ const signed = (value, digits = 2) => value == null ? '—' : `${value >= 0 ? '+
 const pct = (value) => value == null ? '—' : `${signed(value)}%`;
 const toneFor = (value) => value == null ? 'text-muted' : value > 0 ? 'text-up' : value < 0 ? 'text-down' : 'text-muted';
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// Reinvested dividends buy fractions of a share, so a position rendered with a plain
+// integer would round real holdings away. Whole numbers stay clean; the rest keep enough
+// digits to show the position actually grew.
+const formatShares = (value) => {
+    const shares = Number(value) || 0;
+    const whole = Math.abs(shares - Math.round(shares)) < 0.0005;
+    return shares.toLocaleString('en-US', {
+        minimumFractionDigits: whole ? 0 : 2,
+        maximumFractionDigits: whole ? 0 : 4,
+    });
+};
 
 // The Play button is the one control that changes colour while running, so both of its
 // states live here rather than being assembled out of string surgery in play()/pause().
@@ -226,14 +237,51 @@ function renderBills(state) {
         : '';
     const dividends = state.dividends_paid || 0;
     el('dividends-paid').textContent = money(dividends);
+
+    // What is coming. A holding with no declaration is listed too: "nothing scheduled" is
+    // the answer a player needs when they are deciding whether to hold through an ex-date.
+    const schedule = state.dividend_schedule || [];
+    const shown = schedule.filter((row) => row.ex_date).slice(0, 6);
+    const quiet = schedule.length - shown.length;
+    el('dividend-schedule').innerHTML = shown.length
+        ? shown.map((row) => {
+            const soon = row.days_away <= 7;
+            return `
+            <div class="flex items-center justify-between gap-3 rounded-xl border ${soon ? 'border-up/40 bg-up/5' : 'border-line bg-ink-soft'} px-3 py-2">
+                <span>
+                    <span class="font-mono font-semibold">${esc(row.ticker)}</span>
+                    <span class="text-dim">· ${formatShares(row.shares)} shares</span>
+                    <span class="block text-[11px] text-dim">ex-date ${row.ex_date} · in ${row.days_away} day${row.days_away === 1 ? '' : 's'}</span>
+                </span>
+                <span class="shrink-0 text-right">
+                    <span class="block tabular-nums text-up">est ${money(row.estimated)}</span>
+                    <span class="block text-[11px] text-dim">${money(row.per_share)}/share</span>
+                </span>
+            </div>`;
+        }).join('')
+            + (quiet > 0
+                ? `<p class="pt-1 text-dim">${quiet} other holding${quiet === 1 ? '' : 's'} pay no dividend in the next few months.</p>`
+                : '')
+        : '<p class="text-dim">Buy a dividend-paying stock to see its ex-dates here.</p>';
+
     const dividendRows = state.dividends || [];
     el('dividend-history').innerHTML = dividendRows.length
-        ? dividendRows.slice(-5).reverse().map((payment) => `
+        ? dividendRows.slice(-5).reverse().map((payment) => {
+            const bought = Number(payment.reinvested_shares || 0);
+            return `
             <div class="flex items-center justify-between gap-3 rounded-xl border border-up/20 bg-ink-soft px-3 py-2">
                 <span><span class="font-mono font-semibold">${esc(payment.ticker)}</span> · ${payment.ex_date}</span>
-                <span class="tabular-nums text-up">+${money(payment.amount)}</span>
-            </div>`).join('')
+                ${bought > 0
+                    ? `<span class="shrink-0 text-right"><span class="block tabular-nums text-up">+${money(payment.amount)}</span>
+                        <span class="block text-[11px] text-dim">bought ${formatShares(bought)} @ ${money(payment.reinvest_price)}</span></span>`
+                    : `<span class="tabular-nums text-up">+${money(payment.amount)}</span>`}
+            </div>`;
+        }).join('')
         : '<p class="text-dim">No dividends received yet. Hold a dividend-paying stock through its ex-date.</p>';
+
+    // The box is a mirror of the session, not a local preference: render sets it, and the
+    // request is what changes it.
+    el('reinvest-toggle').checked = Boolean(state.reinvest_dividends);
 }
 
 function renderBank(state) {
@@ -266,25 +314,76 @@ function renderBank(state) {
 }
 
 let newsSignature = null;
+let newsStories = [];
+let readerWasRunning = false;
+
+// Seconds one copy of the strip takes to drift past. Per story, not for the whole strip, so
+// the headlines move at the same readable speed whether the run is a week or a decade old.
+const NEWSWIRE_SECONDS_PER_STORY = 6;
+const NEWSWIRE_MIN_SECONDS = 45;
+
+const READER_NOTE = 'This is a practice newswire. Headlines about big moves and unusual '
+    + 'volume are written from the real chart, the rest is invented company noise, and nothing '
+    + 'marks which is which - telling them apart before you trade on one is the exercise. Ask '
+    + 'yourself what this would have to change about the business for the price to care.';
+
+function storyChip(story, duplicate = false) {
+    // The second pass through the list is decoration: it is what makes the drift look endless
+    // instead of snapping back to the start, so it is hidden from the keyboard and the AT.
+    return `<button type="button" data-story="${story.id}"
+        class="news-chip flex shrink-0 items-center gap-3 rounded-2xl border border-line bg-ink-soft px-4 py-2 text-left transition hover:border-brand hover:bg-brand/10"
+        ${duplicate ? 'tabindex="-1" aria-hidden="true"' : ''}>
+        <span class="font-mono text-xs text-muted">${esc(story.ticker)}</span>
+        <span class="max-w-2xl truncate text-sm text-white">${esc(story.headline)}</span>
+        <span class="shrink-0 text-xs tabular-nums text-dim">${esc(story.date)}</span>
+    </button>`;
+}
 
 function renderNews(state) {
     const stories = state.news || [];
     const signature = stories.map((story) => story.id).join('|');
     if (signature === newsSignature) return;
     newsSignature = signature;
+    newsStories = stories;
 
     el('news-count').textContent = `${stories.length} ${stories.length === 1 ? 'story' : 'stories'}`;
-    el('news-feed').innerHTML = stories.length
-        ? stories.map((story) => `
-            <article class="rounded-xl border border-line bg-ink-soft px-3 py-2">
-                <div class="flex items-baseline justify-between gap-2 text-xs text-dim">
-                    <span class="font-mono">${esc(story.ticker)}</span>
-                    <span class="tabular-nums">${story.date}</span>
-                </div>
-                <p class="mt-1 leading-snug">${esc(story.headline)}</p>
-            </article>`).join('')
-        : '<p class="text-xs text-dim">Headlines show up as the clock moves.</p>';
+    const track = el('news-track');
+    if (!stories.length) {
+        track.innerHTML = '<p class="text-xs text-dim">Headlines show up as the clock moves.</p>';
+        track.style.removeProperty('--newswire-duration');
+        return;
+    }
+
+    track.innerHTML = stories.map((story) => storyChip(story)).join('')
+        + stories.map((story) => storyChip(story, true)).join('');
+    const seconds = Math.max(NEWSWIRE_MIN_SECONDS, stories.length * NEWSWIRE_SECONDS_PER_STORY);
+    track.style.setProperty('--newswire-duration', `${seconds}s`);
 }
+
+// --- reading a story ------------------------------------------------------
+
+// Clicking a headline stops the clock: the whole point of a newswire is that you can read
+// it, and reading while six more days go by is not reading.
+function openStory(story) {
+    readerWasRunning = Boolean(timer);
+    pause();
+    el('reader-headline').textContent = story.headline;
+    el('reader-meta').textContent = `${story.ticker} · ${story.date}`;
+    el('reader-body').textContent = READER_NOTE;
+    el('reader-status').textContent = readerWasRunning
+        ? 'The clock is paused while you read.'
+        : 'The clock was already paused.';
+    el('news-reader').classList.remove('hidden');
+    el('news-viewport').classList.add('is-reading');
+}
+
+function closeStory({ resume = false } = {}) {
+    el('news-reader').classList.add('hidden');
+    el('news-viewport').classList.remove('is-reading');
+    if (resume) play();
+}
+
+const readerOpen = () => !el('news-reader').classList.contains('hidden');
 
 function renderBasketNote(payload) {
     const series = payload.series || [];
@@ -534,12 +633,6 @@ function logSignals(signals) {
     updateSignalsBadge();
 }
 
-// A bill leaving the account is an event the player should feel, not something they
-// discover later by noticing the cash number is smaller.
-function logCharges() {
-    // Charges remain visible in the Bills & dividends panel; no overlay notifications.
-}
-
 function setStatus(text, active) {
     const pill = el('status-pill');
     pill.textContent = text;
@@ -563,14 +656,27 @@ function setSignalsOpen(open) {
 }
 
 function updateSignalsBadge() {
-    const badge = el('signals-count');
     // Closed, the badge counts what has not been read; open, it counts the session total,
     // because the drawer itself is now the place to read them.
     const count = signalsOpen ? signalTotal : signalUnread;
+    const unread = !signalsOpen && signalUnread > 0;
+
+    const badge = el('signals-count');
     badge.textContent = String(count);
-    badge.className = 'mx-auto mt-2 min-w-6 rounded-full px-2 py-0.5 text-center text-xs font-semibold '
-        + (signalsOpen ? 'bg-brand text-white' : 'bg-warn text-ink')
+    badge.className = 'rounded-full bg-warn px-2 py-0.5 text-xs font-bold leading-none text-ink'
         + (count === 0 ? ' hidden' : '');
+
+    const headerBadge = el('signals-open-count');
+    headerBadge.textContent = String(count);
+    headerBadge.className = 'rounded-full bg-warn px-1.5 py-0.5 text-[11px] font-bold leading-none text-ink'
+        + (count === 0 ? ' hidden' : '');
+
+    // The tab and the header button pulse while something in the log has not been read:
+    // the old tab was a grey sliver nobody noticed was there.
+    for (const node of [el('signals-toggle'), el('signals-open-btn')]) {
+        node.classList.toggle('signals-attention', unread);
+    }
+
     const summary = el('signals-summary');
     if (!signalTotal) {
         summary.textContent = 'Every pattern the clock has printed on your own symbols.';
@@ -655,7 +761,6 @@ async function advance(days = 1) {
         });
         render(state);
         logSignals(state.signals || []);
-        logCharges();
         scheduleBasket();
         // The lesson itself is still being written on a worker thread. Teacher mode stops
         // the clock now, on the tick that queued it, so the player is not three days past
@@ -912,6 +1017,201 @@ function noteLessons(feed) {
     fillCoach(fresh);
 }
 
+// --- foldable panels ------------------------------------------------------
+
+// The dashboard is ten panels deep and not all of them matter at once, so the ones a player
+// can live without fold shut. The header row stays exactly where it was, everything under it
+// moves into a body wrapper, and the choice is remembered per card.
+const COLLAPSE_KEY = 'tradingTeacher.collapsed';
+
+function collapsedNames() {
+    try {
+        return new Set(JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '[]'));
+    } catch {
+        return new Set();
+    }
+}
+
+function rememberCollapsed(name, collapsed) {
+    const names = collapsedNames();
+    if (collapsed) names.add(name);
+    else names.delete(name);
+    try {
+        localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...names]));
+    } catch { /* private mode */ }
+}
+
+function setupCollapsibles() {
+    const remembered = collapsedNames();
+    for (const card of document.querySelectorAll('[data-collapse]')) {
+        const name = card.dataset.collapse;
+        const heading = card.querySelector('h2');
+        let header = card.firstElementChild;
+        if (!header) continue;
+
+        // Cards whose title is a bare heading (the two indicator panels) get a header row of
+        // their own, so the toggle has somewhere sensible to sit instead of inside the <h2>.
+        if (heading && !header.contains(heading)) {
+            const row = document.createElement('div');
+            row.className = 'mb-3 flex items-center justify-between gap-3';
+            card.insertBefore(row, heading);
+            row.appendChild(heading);
+            header = row;
+        }
+
+        const body = document.createElement('div');
+        body.className = 'collapse-body';
+        while (header.nextSibling) body.appendChild(header.nextSibling);
+        card.appendChild(body);
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'collapse-toggle ml-auto flex shrink-0 items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-dim transition hover:border-muted hover:text-white';
+        toggle.innerHTML = '<span class="collapse-label">Hide</span>'
+            + '<svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5l4-4" /></svg>';
+        header.appendChild(toggle);
+
+        const setCollapsed = (collapsed) => {
+            card.classList.toggle('card-collapsed', collapsed);
+            toggle.setAttribute('aria-expanded', String(!collapsed));
+            toggle.querySelector('.collapse-label').textContent = collapsed ? 'Show' : 'Hide';
+        };
+        setCollapsed(remembered.has(name) || card.dataset.collapseDefault === 'closed');
+
+        toggle.addEventListener('click', () => {
+            const collapsed = !card.classList.contains('card-collapsed');
+            setCollapsed(collapsed);
+            rememberCollapsed(name, collapsed);
+            // A chart that was inside a hidden card was sized to nothing while it was away.
+            if (!collapsed) for (const chart of Object.values(charts)) chart.resize();
+        });
+    }
+}
+
+// --- putting the cards in your own order ----------------------------------
+
+// Ten panels in a fixed order is one opinion about what matters; a player watching their
+// cash run out wants the bank up top and the pattern lessons out of the way. The cards can
+// be dragged into that order, and the arrangement is remembered per browser - the same way
+// the folded state of each card is.
+const ORDER_KEY = 'tradingTeacher.cardOrder';
+
+function storedOrder() {
+    try {
+        const order = JSON.parse(localStorage.getItem(ORDER_KEY) || '[]');
+        return Array.isArray(order) ? order : [];
+    } catch {
+        return [];
+    }
+}
+
+function rememberOrder(container) {
+    try {
+        const ids = [...container.children].map((card) => card.dataset.collapse).filter(Boolean);
+        localStorage.setItem(ORDER_KEY, JSON.stringify(ids));
+    } catch { /* private mode */ }
+}
+
+function applyStoredOrder(container) {
+    const order = storedOrder();
+    if (!order.length) return;
+    const rank = new Map(order.map((id, index) => [id, index]));
+    const cards = [...container.children];
+    cards
+        // Anything the stored order has never seen keeps its place at the end, so a card
+        // added to the page later does not vanish just because a browser remembers an
+        // older arrangement.
+        .sort((a, b) => (rank.get(a.dataset.collapse) ?? order.length) - (rank.get(b.dataset.collapse) ?? order.length))
+        .forEach((card) => container.appendChild(card));
+}
+
+function setupReorder() {
+    const container = document.querySelector('.card-flow');
+    if (!container) return;
+    applyStoredOrder(container);
+
+    let dragging = null;
+
+    const nearest = (x, y) => {
+        let best = null;
+        let bestScore = Infinity;
+        for (const card of container.children) {
+            if (card === dragging) continue;
+            const box = card.getBoundingClientRect();
+            // Columns mean "nearest" cannot just be vertical distance: a card one column
+            // over and level with the pointer is not where it is going.
+            const score = Math.abs(x - (box.left + box.width / 2)) * 2 + Math.abs(y - (box.top + box.height / 2));
+            if (score < bestScore) {
+                bestScore = score;
+                best = card;
+            }
+        }
+        return best;
+    };
+
+    container.addEventListener('dragover', (event) => {
+        if (!dragging) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        const target = nearest(event.clientX, event.clientY);
+        if (!target || target === dragging) return;
+        const box = target.getBoundingClientRect();
+        const after = event.clientY > box.top + box.height / 2;
+        container.insertBefore(dragging, after ? target.nextSibling : target);
+    });
+
+    container.addEventListener('drop', (event) => {
+        if (dragging) event.preventDefault();
+    });
+
+    for (const card of container.querySelectorAll('[data-collapse]')) {
+        const header = card.firstElementChild;
+        if (!header) continue;
+        const grip = document.createElement('button');
+        grip.type = 'button';
+        grip.draggable = true;
+        grip.className = 'card-grip flex h-7 items-center rounded-lg px-1 text-dim transition hover:text-white';
+        grip.title = 'Drag to reorder (Alt + arrows also works)';
+        grip.setAttribute('aria-label', `Reorder the ${card.dataset.collapse} panel`);
+        grip.innerHTML = '<svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="currentColor" aria-hidden="true">'
+            + '<circle cx="6" cy="4" r="1.2"/><circle cx="10" cy="4" r="1.2"/>'
+            + '<circle cx="6" cy="8" r="1.2"/><circle cx="10" cy="8" r="1.2"/>'
+            + '<circle cx="6" cy="12" r="1.2"/><circle cx="10" cy="12" r="1.2"/></svg>';
+        // Ahead of the fold button, so the two controls sit together at the end of the row.
+        const fold = header.querySelector('.collapse-toggle');
+        header.insertBefore(grip, fold || null);
+
+        grip.addEventListener('dragstart', (event) => {
+            dragging = card;
+            card.classList.add('is-dragging');
+            event.dataTransfer.effectAllowed = 'move';
+            // The handle is a few pixels wide; the card is what should follow the pointer.
+            event.dataTransfer.setData('text/plain', card.dataset.collapse || '');
+            const box = card.getBoundingClientRect();
+            event.dataTransfer.setDragImage(card, event.clientX - box.left, event.clientY - box.top);
+        });
+
+        grip.addEventListener('dragend', () => {
+            card.classList.remove('is-dragging');
+            dragging = null;
+            rememberOrder(container);
+        });
+
+        // Dragging is not available to everyone: the keyboard does the same job.
+        grip.addEventListener('keydown', (event) => {
+            const step = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
+            if (!event.altKey || !step) return;
+            event.preventDefault();
+            const cards = [...container.children];
+            const index = cards.indexOf(card) + step;
+            if (index < 0 || index >= cards.length) return;
+            container.insertBefore(card, step < 0 ? cards[index] : cards[index].nextSibling);
+            rememberOrder(container);
+            grip.focus();
+        });
+    }
+}
+
 // --- the walkthrough ------------------------------------------------------
 
 const TOUR_STEPS = [
@@ -976,8 +1276,8 @@ const TOUR_STEPS = [
         title: 'Signals',
         body: 'When a pattern prints on one of your stocks - a moving-average cross, RSI running '
             + 'hot, a volume spike - it lands in this drawer quietly instead of popping up over the '
-            + 'chart. The number on the tab counts the ones you have not read yet. Click it '
-            + 'whenever you want to look through them.',
+            + 'chart. The blue tab on the right edge, and the Signal log button in the header, both '
+            + 'count the ones you have not read yet.',
     },
     {
         target: 'buy-btn',
@@ -989,7 +1289,8 @@ const TOUR_STEPS = [
     {
         target: 'play-btn',
         title: 'Moving the clock',
-        body: 'Next day steps forward one trading day. Play runs the clock by itself and the '
+        body: 'The clock sits in the bar at the top of the page and stays there as you scroll '
+            + 'down. Next day steps forward one trading day, Play runs the clock by itself and the '
             + 'slider sets the speed. Start slow - one day a second is plenty while you are still '
             + 'learning to read the chart.',
     },
@@ -1010,10 +1311,10 @@ const TOUR_STEPS = [
     {
         target: 'news-panel',
         title: 'The newswire',
-        body: 'Headlines about the stocks you picked land here every day. Most of it is noise - '
-            + 'conference talks, office moves, routine filings. A few stories actually matter, and '
-            + 'those tend to show up in the price. Nothing is labelled, so part of the game is '
-            + 'learning to tell them apart before you trade on one.',
+        body: 'Headlines about the stocks you picked drift along the top of the page as the clock '
+            + 'runs. Most of it is noise - conference talks, office moves, routine filings - and a '
+            + 'few stories actually matter. Nothing is labelled, so telling them apart is part of '
+            + 'the game. Click any headline and the clock stops so you can read it properly.',
     },
     {
         target: 'pattern-list',
@@ -1122,6 +1423,17 @@ function endTour() {
 // --- wiring ---------------------------------------------------------------
 
 el('signals-toggle').addEventListener('click', () => setSignalsOpen(true));
+el('signals-open-btn').addEventListener('click', () => setSignalsOpen(true));
+el('reader-close').addEventListener('click', () => closeStory());
+el('reader-resume').addEventListener('click', () => closeStory({ resume: true }));
+// Delegated: the strip holds every story twice, so the listener is on the track rather than
+// on forty buttons that are replaced whenever a headline arrives.
+el('news-track').addEventListener('click', (event) => {
+    const chip = event.target.closest('.news-chip');
+    if (!chip) return;
+    const story = newsStories.find((row) => row.id === chip.dataset.story);
+    if (story) openStory(story);
+});
 el('signals-close').addEventListener('click', () => setSignalsOpen(false));
 el('signal-backdrop').addEventListener('click', () => setSignalsOpen(false));
 document.addEventListener('keydown', (event) => {
@@ -1146,7 +1458,24 @@ document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     if (!el('tour-card').classList.contains('hidden')) endTour();
     else if (!el('coach-overlay').classList.contains('hidden')) closeCoach(false);
+    else if (readerOpen()) closeStory();
 });
+el('reinvest-toggle').addEventListener('change', async (event) => {
+    const wanted = event.target.checked;
+    event.target.disabled = true;
+    try {
+        render(await call(`/api/session/${sessionId}/dividends`, {
+            method: 'POST',
+            body: JSON.stringify({ reinvest: wanted, focus }),
+        }));
+    } catch (error) {
+        event.target.checked = !wanted;
+        console.error(error);
+    } finally {
+        event.target.disabled = false;
+    }
+});
+
 el('buy-btn').addEventListener('click', () => trade('BUY'));
 el('sell-btn').addEventListener('click', () => trade('SELL'));
 el('trade-ticker').addEventListener('change', (event) => setFocus(event.target.value));
@@ -1315,6 +1644,8 @@ async function checkAI() {
     } catch { /* private mode */ }
     setTeacherMode(savedTeacher === null ? true : savedTeacher === '1');
 
+    setupCollapsibles();
+    setupReorder();
     await loadCompanyNames();
     checkAI();
     render(await call(`/api/session/${sessionId}/state`));

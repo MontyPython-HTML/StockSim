@@ -2,13 +2,15 @@
 
 import json
 import threading
+import time
 from contextlib import contextmanager
-from datetime import date, datetime
-from decimal import Decimal
+from datetime import date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Iterable
 
 import pandas as pd
+import psycopg2
 from psycopg2.extras import RealDictCursor, execute_values
 from psycopg2.pool import ThreadedConnectionPool
 
@@ -20,17 +22,162 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 # that as one statement blows the server's per-message memory budget on a small instance.
 INSERT_PAGE_SIZE = 1000
 
+class DatabaseBusy(RuntimeError):
+    """No connection was free inside the wait budget. Retryable, and worth saying so.
+
+    Distinct from every other database error on purpose: callers are meant to catch this
+    one and answer "busy, try again" rather than 500, because nothing is broken - the
+    pool is simply full, and it will drain.
+    """
+
+
 _pool: ThreadedConnectionPool | None = None
 _pool_lock = threading.Lock()
+# Connections the pool opens itself (its minimum, at creation) are never seen by the
+# check-in hook, so "never seen" counts as "as old as the pool" - which is exactly when
+# they were dialled.
+_pool_created_at = 0.0
+# One permit per possible connection. psycopg2 hands out connections under a lock it holds
+# while it dials the server, so a burst of cold requests queues behind that lock with no
+# deadline and no way out. A permit with a timeout in front of it turns the same situation
+# into "we are at capacity, come back in a moment".
+_slots: threading.BoundedSemaphore | None = None
 
 
 def _get_pool() -> ThreadedConnectionPool:
-    global _pool
+    global _pool, _slots, _pool_created_at
     if _pool is None:
         with _pool_lock:
             if _pool is None:
-                _pool = ThreadedConnectionPool(1, 8, config.DATABASE_DSN)
+                # timeouts travel with the connection rather than the call site: a socket
+                # that never answers and a query that never returns are both ways to lose
+                # a connection for good.
+                _pool = ThreadedConnectionPool(
+                    config.DB_POOL_MIN,
+                    config.DB_POOL_MAX,
+                    config.DATABASE_DSN,
+                    connect_timeout=config.DB_CONNECT_TIMEOUT,
+                    application_name="stocksave",
+                    options=f"-c statement_timeout={config.DB_STATEMENT_TIMEOUT_MS}",
+                )
+                _slots = threading.BoundedSemaphore(config.DB_POOL_MAX)
+                _pool_created_at = time.monotonic()
     return _pool
+
+
+def _get_slots() -> threading.BoundedSemaphore:
+    _get_pool()
+    assert _slots is not None
+    return _slots
+
+
+def pool_status() -> dict:
+    """What the pool is holding, for the health endpoint and for error messages."""
+    pool = _get_pool()
+    in_use = len(getattr(pool, "_used", {}))
+    idle = len(getattr(pool, "_pool", []))
+    return {
+        "max": pool.maxconn,
+        "min": pool.minconn,
+        "in_use": in_use,
+        "idle": idle,
+        "wait_seconds": config.DB_POOL_WAIT_SECONDS,
+    }
+
+
+# When each pooled connection was last handed back, so idle ones can be tested before
+# they are trusted. Keyed by id(): pool connections live for the life of the process.
+_last_used: dict[int, float] = {}
+_last_used_lock = threading.Lock()
+
+
+def _stamp_returned(conn) -> None:
+    with _last_used_lock:
+        _last_used[id(conn)] = time.monotonic()
+
+
+def _idle_for(conn) -> float:
+    with _last_used_lock:
+        since = _last_used.get(id(conn), _pool_created_at)
+    return time.monotonic() - since
+
+
+def _is_alive(conn) -> bool:
+    """One cheap round trip, to find out whether a connection still exists."""
+    if conn.closed:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return True
+    except psycopg2.Error:
+        return False
+
+
+def _checkout(pool: ThreadedConnectionPool, *, autocommit: bool):
+    """A live connection from the pool, replacing one the server already hung up on.
+
+    A remote database drops idle connections (restarts, failovers, idle timeouts), and a
+    pooled connection that died is only discovered when a query is attempted on it - so
+    the failure lands on whoever clicks next, and looks like the game broke. Anything
+    that has been idle is pinged once here instead, which costs nothing on a busy pool
+    and hides the whole class of failure on a quiet one.
+    """
+    conn = pool.getconn()
+    _set_autocommit(conn, autocommit)
+    if not conn.closed and _idle_for(conn) <= config.DB_POOL_IDLE_PING_SECONDS:
+        return conn
+    if _is_alive(conn):
+        return conn
+    pool.putconn(conn, close=True)
+    conn = pool.getconn()
+    _set_autocommit(conn, autocommit)
+    if conn.closed:
+        pool.putconn(conn, close=True)
+        raise DatabaseBusy("the database refused every connection the pool offered")
+    return conn
+
+
+def _set_autocommit(conn, autocommit: bool) -> None:
+    """Switch mode on a freshly checked-out connection.
+
+    Has to happen before anything runs on it: psycopg2 refuses to change the session
+    while a transaction is open, which is exactly what a ping for liveness would leave
+    behind if this came after it.
+    """
+    if conn.autocommit != autocommit:
+        conn.autocommit = autocommit
+
+
+def _checkin(pool: ThreadedConnectionPool, conn) -> None:
+    """Hand a connection back, closing rather than pooling one that is already dead."""
+    try:
+        pool.putconn(conn, close=bool(conn.closed))
+    except Exception:  # noqa: BLE001 - a failed check-in must not mask the real error
+        pass
+    finally:
+        _stamp_returned(conn)
+
+
+@contextmanager
+def _connection(*, autocommit: bool):
+    """Check a connection out, hand it back, and never wait for one without a deadline."""
+    pool = _get_pool()
+    slots = _get_slots()
+    if not slots.acquire(timeout=config.DB_POOL_WAIT_SECONDS):
+        status = pool_status()
+        raise DatabaseBusy(
+            "All {max} database connections are busy ({in_use} in use). "
+            "Nothing is broken - retry in a moment.".format(**status)
+        )
+    conn = None
+    try:
+        conn = _checkout(pool, autocommit=autocommit)
+        yield conn
+    finally:
+        if conn is not None:
+            _checkin(pool, conn)
+        slots.release()
 
 
 @contextmanager
@@ -42,14 +189,8 @@ def get_conn():
     of the time a session took to start. Anything that must land as one unit takes
     get_transaction() below instead.
     """
-    pool = _get_pool()
-    conn = pool.getconn()
-    if not conn.autocommit:
-        conn.autocommit = True
-    try:
+    with _connection(autocommit=True) as conn:
         yield conn
-    finally:
-        pool.putconn(conn)
 
 
 @contextmanager
@@ -67,26 +208,45 @@ def get_transaction(dict_rows: bool = True):
     the writers that touch more than one row set - a trade and the balance it moves, a
     shock and the bars it reprices - come through here.
     """
-    pool = _get_pool()
-    conn = pool.getconn()
-    previous = conn.autocommit
-    conn.autocommit = False
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor if dict_rows else None) as cur:
-            yield cur
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.autocommit = previous
-        pool.putconn(conn)
+    with _connection(autocommit=False) as conn:
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor if dict_rows else None) as cur:
+                yield cur
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            # Back to the pool's working default, even if the caller raised mid-transaction.
+            conn.autocommit = True
 
 
 def apply_schema() -> None:
     # One multi-statement string: PostgreSQL runs it as a single implicit transaction.
     with get_cursor(dict_rows=False) as cur:
         cur.execute(SCHEMA_PATH.read_text())
+
+
+def warm_up() -> dict:
+    """Open the pool at boot, and prove the credentials work while nobody is waiting.
+
+    psycopg2 dials the server under the pool's own lock, so the request that happens to
+    arrive first pays for every connection behind it. Paying that at startup instead
+    means the first page load is not the slowest one of the day.
+    """
+    pool = _get_pool()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+    return pool_status()
+
+
+def health() -> dict:
+    """Is the database answering, and how much of the pool is spoken for."""
+    with get_cursor() as cur:
+        cur.execute("SELECT 1 AS ok")
+        cur.fetchone()
+    return {"database": "ok", **pool_status()}
 
 
 # --- prices ---------------------------------------------------------------
@@ -111,6 +271,31 @@ def upsert_prices(ticker: str, rows: Iterable[tuple]) -> int:
     with get_transaction(dict_rows=False) as cur:
         execute_values(cur, sql, rows, page_size=INSERT_PAGE_SIZE)
     return len(rows)
+
+
+def update_dividends(ticker: str, rows: Iterable[tuple]) -> int:
+    """Set the cash dividend on price rows that already exist. Never inserts.
+
+    A dividend is declared on a day the stock trades, so the row it belongs to is always
+    there; an UPDATE rather than an upsert keeps a repair run from inventing a bar the
+    price ingest never wrote. Used by the dividend backfill, because databases loaded
+    before dividends were stored have 0 in every row and pay nothing forever.
+    """
+    rows = [(ticker.upper(), day, float(amount)) for day, amount in rows]
+    if not rows:
+        return 0
+    sql = """
+        UPDATE stock_prices AS p
+           SET dividend = v.dividend
+          FROM (VALUES %s) AS v(ticker, ts, dividend)
+         WHERE p.ticker = v.ticker AND p.ts = v.ts::date
+        RETURNING p.ts
+    """
+    updated = 0
+    with get_transaction(dict_rows=False) as cur:
+        for page in (rows[i:i + INSERT_PAGE_SIZE] for i in range(0, len(rows), INSERT_PAGE_SIZE)):
+            updated += len(execute_values(cur, sql, page, page_size=INSERT_PAGE_SIZE, fetch=True))
+    return updated
 
 
 def fetch_price_history(ticker: str, start_date: date, end_date: date) -> pd.DataFrame:
@@ -159,6 +344,7 @@ def create_session(
     user_label: str = "anonymous",
     salary_amount: Decimal = Decimal("0"),
     finances_enabled: bool = True,
+    reinvest_dividends: bool = False,
 ) -> dict:
     """Create the session row. The watchlist is written separately, by set_session_tickers."""
     with get_cursor() as cur:
@@ -166,9 +352,10 @@ def create_session(
             """
             INSERT INTO game_sessions (
                 id, user_label, start_date, end_date, sim_date,
-                starting_cash, cash_balance, nessie_customer_id, nessie_account_id, salary_amount, finances_enabled
+                starting_cash, cash_balance, nessie_customer_id, nessie_account_id, salary_amount,
+                finances_enabled, reinvest_dividends
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -183,6 +370,7 @@ def create_session(
                 nessie_account_id,
                 salary_amount,
                 finances_enabled,
+                reinvest_dividends,
             ),
         )
         return cur.fetchone()
@@ -335,7 +523,7 @@ def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
                     WHERE session_id = %(sid)s AND shares > 0 ORDER BY ticker
                 ) h) AS holdings,
                 (SELECT coalesce(json_agg(t), '[]'::json) FROM (
-                    SELECT id, ticker, trade_date, side, shares, price, cash_after, forced
+                    SELECT id, ticker, trade_date, side, shares, price, cash_after, forced, reinvested
                     FROM transactions WHERE session_id = %(sid)s ORDER BY trade_date, id
                 ) t) AS trades,
                 (SELECT coalesce(json_agg(e), '[]'::json) FROM (
@@ -348,7 +536,8 @@ def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
                     FROM session_expenses WHERE session_id = %(sid)s ORDER BY due_date, id
                 ) x) AS expenses,
                 (SELECT coalesce(json_agg(d), '[]'::json) FROM (
-                    SELECT ticker, ex_date, shares, per_share, amount, cash_after
+                    SELECT ticker, ex_date, shares, per_share, amount, cash_after,
+                           reinvested_shares, reinvest_price
                     FROM dividend_payments WHERE session_id = %(sid)s ORDER BY ex_date, id
                 ) d) AS dividends
             """,
@@ -473,16 +662,52 @@ def settle_cash_flows(session_id: str, flows: list[dict], prices_on, plan_sales)
         return applied, cash
 
 
+def upcoming_dividends(tickers: list[str], after: date, within_days: int = 120) -> list[dict]:
+    """The next declared ex-dates for each symbol, after `after`.
+
+    Read straight off the real price history - a declared dividend is a fact about the bar
+    it sits on, so "what is coming" is a range scan over rows the database already holds.
+    Simulated futures carry no declarations, which is why the caller filters anything that
+    falls past a session's fork date.
+    """
+    symbols = sorted({ticker.upper() for ticker in tickers if ticker})
+    if not symbols:
+        return []
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (ticker) ticker, ts AS ex_date, dividend, close
+              FROM stock_prices
+             WHERE ticker = ANY(%s::text[])
+               AND ts > %s AND ts <= %s
+               AND dividend > 0
+             ORDER BY ticker, ts
+            """,
+            (symbols, after, after + timedelta(days=within_days)),
+        )
+        return cur.fetchall()
+
+
 def settle_dividends(session_id: str, tickers: list[str], after: date, through: date) -> list[dict]:
-    """Credit declared dividends for shares held while the clock crossed the ex-date."""
+    """Pay declared dividends for shares held while the clock crossed the ex-date.
+
+    Cash by default; into more shares when the session has reinvestment switched on. Both
+    are the same dividend - one arrives as money, the other as stock - so the payment row
+    is written either way and the trade ledger gets a purchase only in the second case.
+    """
     if through <= after or not tickers:
         return []
+    cent = Decimal("0.01")
     with get_transaction() as cur:
-        cur.execute("SELECT cash_balance FROM game_sessions WHERE id = %s FOR UPDATE", (session_id,))
+        cur.execute(
+            "SELECT cash_balance, reinvest_dividends FROM game_sessions WHERE id = %s FOR UPDATE",
+            (session_id,),
+        )
         row = cur.fetchone()
         if not row:
             return []
         cash = row["cash_balance"]
+        reinvest = bool(row.get("reinvest_dividends"))
         cur.execute(
             """
             SELECT ticker, side, shares, trade_date
@@ -495,7 +720,7 @@ def settle_dividends(session_id: str, tickers: list[str], after: date, through: 
         trades = cur.fetchall()
         cur.execute(
             """
-            SELECT ticker, ts AS ex_date, dividend
+            SELECT ticker, ts AS ex_date, dividend, close
             FROM stock_prices
             WHERE ticker = ANY(%s::text[]) AND ts > %s AND ts <= %s AND dividend > 0
             ORDER BY ts, ticker
@@ -505,6 +730,16 @@ def settle_dividends(session_id: str, tickers: list[str], after: date, through: 
         declarations = cur.fetchall()
         if not declarations:
             return []
+        # Reinvestment buys shares, so the position has to be read and written as one: two
+        # payouts on the same day must land on a cost basis that knows about the first.
+        positions: dict[str, dict] = {}
+        if reinvest:
+            cur.execute(
+                "SELECT ticker, shares, avg_cost FROM portfolio_holdings "
+                "WHERE session_id = %s AND shares > 0 FOR UPDATE",
+                (session_id,),
+            )
+            positions = {held["ticker"]: dict(held) for held in cur.fetchall()}
         cur.execute(
             "SELECT ticker, ex_date FROM dividend_payments WHERE session_id = %s AND ex_date > %s AND ex_date <= %s",
             (session_id, after, through),
@@ -527,20 +762,76 @@ def settle_dividends(session_id: str, tickers: list[str], after: date, through: 
             if shares <= 0 or (ticker, ex_date) in paid:
                 continue
             per_share = declaration["dividend"]
-            amount = (shares * per_share).quantize(Decimal("0.01"))
+            amount = (shares * per_share).quantize(cent)
             if amount <= 0:
                 continue
-            cash += amount
+
+            reinvested_shares = Decimal("0")
+            reinvest_price = None
+            close = declaration.get("close")
+            price = Decimal(str(close)).quantize(Decimal("0.0001")) if close else Decimal("0")
+            if reinvest and price > 0:
+                # Fractional shares: a payout is never a round number of shares, and the
+                # money has to go somewhere. The payment is exactly what was declared, so
+                # what the shares cost and what they are worth stay in step.
+                reinvested_shares = (amount / price).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+                reinvest_price = price
+                position = positions.get(ticker)
+                held_shares = Decimal(str(position["shares"])) if position else Decimal("0")
+                held_cost = Decimal(str(position["avg_cost"])) if position else Decimal("0")
+                total = held_shares + reinvested_shares
+                avg_cost = ((held_shares * held_cost) + amount) / total if total > 0 else price
+                positions[ticker] = {
+                    "shares": total,
+                    "avg_cost": avg_cost.quantize(Decimal("0.0001")),
+                }
+                cur.execute(
+                    """
+                    INSERT INTO portfolio_holdings (session_id, ticker, shares, avg_cost)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (session_id, ticker) DO UPDATE SET
+                        shares = EXCLUDED.shares,
+                        avg_cost = EXCLUDED.avg_cost,
+                        updated_at = now()
+                    """,
+                    (session_id, ticker, total, positions[ticker]["avg_cost"]),
+                )
+                # In the trade ledger as a purchase, because that is what it is: the
+                # position and the ledger have to agree, and the next dividend is paid on
+                # whatever the ledger says. Flagged so the page can call it a payout.
+                cur.execute(
+                    """
+                    INSERT INTO transactions
+                        (session_id, ticker, trade_date, side, shares, price, cash_after, reinvested)
+                    VALUES (%s, %s, %s, 'BUY', %s, %s, %s, TRUE)
+                    """,
+                    (session_id, ticker, ex_date, reinvested_shares, reinvest_price, cash),
+                )
+            else:
+                cash += amount
+
             cur.execute(
                 """
                 INSERT INTO dividend_payments
-                    (session_id, ticker, ex_date, shares, per_share, amount, cash_after)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING ticker, ex_date, shares, per_share, amount, cash_after
+                    (session_id, ticker, ex_date, shares, per_share, amount, cash_after,
+                     reinvested_shares, reinvest_price)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING ticker, ex_date, shares, per_share, amount, cash_after,
+                          reinvested_shares, reinvest_price
                 """,
-                (session_id, ticker, ex_date, shares, per_share, amount, cash),
+                (
+                    session_id,
+                    ticker,
+                    ex_date,
+                    shares,
+                    per_share,
+                    amount,
+                    cash,
+                    reinvested_shares,
+                    reinvest_price,
+                ),
             )
-            applied.append(cur.fetchone())
+            applied.append({**cur.fetchone(), "reinvested": bool(reinvest_price)})
         if applied:
             cur.execute("UPDATE game_sessions SET cash_balance = %s, updated_at = now() WHERE id = %s", (cash, session_id))
         return applied

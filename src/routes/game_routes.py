@@ -113,7 +113,36 @@ def handle_ai_error(error: AIUnavailable):
     return jsonify({"error": str(error)}), 503
 
 
+@api.errorhandler(database.DatabaseBusy)
+def handle_database_busy(error: database.DatabaseBusy):
+    """A full pool is a wait, not a failure.
+
+    Nothing is broken and nothing was lost: every connection is simply in use by a request
+    that will finish. Answered as 503 with Retry-After so the page says "try again in a
+    second" instead of showing a 500 the player cannot act on.
+    """
+    response = jsonify({"error": str(error), "retryable": True})
+    response.status_code = 503
+    response.headers["Retry-After"] = "2"
+    return response
+
+
 # --- catalog --------------------------------------------------------------
+
+
+@api.get("/health")
+def health():
+    """Is the database reachable, and how much of the pool is in use.
+
+    The pool is shared by every request thread and its size is fixed, so "the clock
+    stopped" is usually this number. Worth being able to read without a debugger.
+    """
+    try:
+        return jsonify(database.health())
+    except database.DatabaseBusy as error:
+        return jsonify({"database": "busy", "error": str(error), **database.pool_status()}), 503
+    except Exception as error:  # noqa: BLE001 - the point of the endpoint is to report this
+        return jsonify({"database": "unreachable", "error": str(error)}), 503
 
 
 @api.get("/universe")
@@ -204,6 +233,7 @@ def start_session():
         volatility=_optional_float(body.get("volatility"), "volatility"),
         seed=_optional_int(body.get("seed"), "seed"),
         salary_amount=None if salary is None else Decimal(str(salary)).quantize(Decimal("0.01")),
+        reinvest_dividends=bool(body.get("reinvest_dividends")),
     )
     return jsonify(state), 201
 
@@ -216,6 +246,19 @@ def session_state(session_id: str):
             focus=(request.args.get("focus") or "").strip().upper() or None,
             window_days=_optional_int(request.args.get("window"), "window")
             or engine.DEFAULT_CHART_WINDOW,
+        )
+    )
+
+
+@api.post("/session/<session_id>/dividends")
+def dividends(session_id: str):
+    """Switch future dividends between cash and automatic reinvestment."""
+    body = request.get_json(silent=True) or {}
+    return jsonify(
+        engine.set_reinvestment(
+            session_id,
+            enabled=bool(body.get("reinvest")),
+            focus=_focus_argument(body),
         )
     )
 

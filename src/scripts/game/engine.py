@@ -136,6 +136,53 @@ def _portfolio(
     }
 
 
+def _fork_date(source) -> date | None:
+    """When this symbol's prices stop being real, if they ever do."""
+    if getattr(source, "kind", "real") != "simulated":
+        return None
+    return _as_date(source.config.fork_date)
+
+
+def dividend_schedule(
+    sources: dict, holdings: list[dict], sim_date: date, within_days: int = 120
+) -> list[dict]:
+    """What each holding is due to be paid, and what that comes to at today's price.
+
+    Includes a row for every position, declared or not: "nothing scheduled" is itself the
+    answer a player needs when deciding whether to hold through an ex-date. A generated
+    future pays no dividends, so a declaration that falls past the fork is dropped rather
+    than shown - the money could never arrive.
+    """
+    if not holdings:
+        return []
+    shares_by_ticker = {row["ticker"]: Decimal(str(row["shares"])) for row in holdings}
+    declared = {
+        row["ticker"]: row
+        for row in database.upcoming_dividends(list(shares_by_ticker), sim_date, within_days=within_days)
+    }
+
+    schedule = []
+    for ticker, shares in sorted(shares_by_ticker.items()):
+        row = declared.get(ticker)
+        if row and (fork := _fork_date(sources.get(ticker))) and row["ex_date"] > fork:
+            row = None
+        if not row:
+            schedule.append({"ticker": ticker, "shares": float(shares), "ex_date": None})
+            continue
+        per_share = Decimal(str(row["dividend"]))
+        schedule.append(
+            {
+                "ticker": ticker,
+                "shares": float(shares),
+                "ex_date": _as_date(row["ex_date"]).isoformat(),
+                "days_away": (_as_date(row["ex_date"]) - sim_date).days,
+                "per_share": float(per_share),
+                "estimated": float((shares * per_share).quantize(Decimal("0.01"))),
+            }
+        )
+    return schedule
+
+
 def _quotes(session_id: str, tickers: list[str], sim_date: date) -> dict[str, dict]:
     """Last close at or before sim_date for each symbol, real or simulated.
 
@@ -196,11 +243,31 @@ def _state_from_bundle(
             for ticker in watchlist
         ],
         "portfolio": _portfolio(session, bundle["holdings"], closes, bills_paid, salary_earned),
+        # Every number is cast here: rows that just landed come back from the driver as
+        # Decimals, and a Decimal in the JSON becomes a string in the browser.
+        # Every number is cast here: rows that just landed come back from the driver as
+        # Decimals, and a Decimal in the JSON becomes a string in the browser.
         "dividends": [
-            {**row, "ex_date": _as_date(row["ex_date"]).isoformat(), "amount": float(row["amount"])}
+            {
+                "ticker": row["ticker"],
+                "ex_date": _as_date(row["ex_date"]).isoformat(),
+                "shares": float(row["shares"]),
+                "per_share": float(row["per_share"]),
+                "amount": float(row["amount"]),
+                "cash_after": float(row["cash_after"]) if row.get("cash_after") is not None else None,
+                "reinvested_shares": float(row.get("reinvested_shares") or 0),
+                "reinvest_price": float(row["reinvest_price"]) if row.get("reinvest_price") else None,
+            }
             for row in bundle.get("dividends") or []
         ],
         "dividends_paid": sum(float(row["amount"]) for row in bundle.get("dividends") or []),
+        "dividends_reinvested": sum(
+            float(row.get("reinvested_shares") or 0) for row in bundle.get("dividends") or []
+        ),
+        "reinvest_dividends": bool(session.get("reinvest_dividends")),
+        # What is coming, not just what happened: the ex-dates already sitting in the price
+        # history, and what each position stands to be paid when the clock reaches them.
+        "dividend_schedule": dividend_schedule(sources, bundle["holdings"], sim_date),
         "dividend_summary": {
             "total": sum(float(row["amount"]) for row in bundle.get("dividends") or []),
             "payments": len(bundle.get("dividends") or []),
@@ -214,6 +281,7 @@ def _state_from_bundle(
                 "shares": float(t["shares"]),
                 "price": float(t["price"]),
                 "forced": bool(t.get("forced")),
+                "reinvested": bool(t.get("reinvested")),
             }
             for t in bundle["trades"]
         ],
@@ -301,6 +369,7 @@ def start_session(
     salary_amount: Decimal | None = None,
     use_finances: bool = True,
     initial_cash: Decimal | None = None,
+    reinvest_dividends: bool = False,
 ) -> dict:
     """Start a run over a watchlist.
 
@@ -344,6 +413,7 @@ def start_session(
         nessie_account_id=account_id,
         salary_amount=salary,
         finances_enabled=use_finances,
+        reinvest_dividends=reinvest_dividends,
     )
     session_id = str(session["id"])
     database.set_session_tickers(session_id, watchlist)
@@ -652,6 +722,11 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
         else []
     )
     dividend_rows = database.settle_dividends(session_id, watchlist, previous_sim_date, sim_date)
+    # Dividends are credited straight to cash by that call, but the session row was read
+    # before it ran: without this the tick that lands on an ex-date hands the page
+    # yesterday's balance, and the player watches the payment appear a day late.
+    if dividend_rows:
+        session["cash_balance"] = dividend_rows[-1]["cash_after"]
 
     database.update_session(
         session_id,
@@ -671,8 +746,11 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
     if finished:
         session["status"] = "finished"
     # The bundle is one tick stale: the ledger rows just written are the ones the player has
-    # not seen, and a forced sale also moved holdings and the trade log.
-    if any(row["sold"] for row in charged):
+    # not seen, and a forced sale - or a reinvested dividend, which buys shares the same way -
+    # has moved holdings and the trade log in the meantime. Re-reading only when something
+    # behind the player's back actually changed is the difference between one query and one
+    # query per tick.
+    if any(row["sold"] for row in charged) or any(row.get("reinvested") for row in dividend_rows):
         fresh = database.load_session_bundle(session_id)
         bundle["holdings"], bundle["trades"] = fresh["holdings"], fresh["trades"]
     bundle["expenses"] = list(bundle.get("expenses") or []) + charged
@@ -685,6 +763,19 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
 
 
 # --- trading --------------------------------------------------------------
+
+
+def set_reinvestment(session_id: str, enabled: bool, focus: str | None = None) -> dict:
+    """Take future dividends as cash, or roll them into the shares that paid them.
+
+    Settable at any point in a run: it changes what the next payment does, never one that
+    has already landed, so there is nothing to protect the player from.
+    """
+    session = database.get_session(session_id)
+    if not session:
+        raise GameError("Session not found")
+    database.update_session(session_id, reinvest_dividends=bool(enabled))
+    return get_state(session_id, focus)
 
 
 def execute_trade(

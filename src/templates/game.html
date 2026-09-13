@@ -17,13 +17,28 @@
                 <div class="flex items-center gap-4">
                     <a href="/"
                         class="inline-flex items-center gap-2 text-sm text-muted transition hover:text-white">
-                        <span class="flex h-6 w-6 items-center justify-center rounded-full border border-line-strong">&larr;</span>
+                        <!-- Drawn rather than typed: the arrow glyph sat a hair above centre in
+                             the circle, and no amount of line-height nudging fixed it. -->
+                        <span class="flex h-6 w-6 items-center justify-center rounded-full border border-line-strong">
+                            <svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="none" stroke="currentColor"
+                                stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M9.5 3 4.5 8l5 5" />
+                                <path d="M4.75 8h6.75" />
+                            </svg>
+                        </span>
                         New session
                     </a>
                     <button id="tutorial-btn" type="button"
                         class="inline-flex items-center gap-2 rounded-full border border-line-strong px-3 py-1 text-sm text-muted transition hover:border-brand hover:text-white">
                         <span class="flex h-5 w-5 items-center justify-center rounded-full border border-line-strong text-xs">?</span>
                         How this works
+                    </button>
+                    <button id="signals-open-btn" type="button"
+                        class="inline-flex items-center gap-2 rounded-full border border-brand/60 bg-brand/15 px-3 py-1 text-sm font-medium text-brand-soft transition hover:border-brand hover:text-white">
+                        <span class="signals-badge-dot" aria-hidden="true"></span>
+                        Signal log
+                        <span id="signals-open-count"
+                            class="hidden rounded-full bg-warn px-1.5 py-0.5 text-[11px] font-bold leading-none text-ink">0</span>
                     </button>
                 </div>
                 <h1 class="mt-3 text-5xl font-bold tracking-tight">
@@ -52,6 +67,72 @@
             </div>
         </header>
 
+        <!-- The clock lives at the top of the page and sticks there while you scroll. Play,
+             Next day and the speed slider used to sit in a card near the bottom of a long
+             dashboard, which meant hunting for the one control a new player needs first. -->
+        <section id="clock-bar"
+            class="sticky top-0 z-30 mb-6 flex flex-wrap items-center gap-4 rounded-3xl border border-line bg-surface/95 px-5 py-4 shadow-lg backdrop-blur">
+            <div class="flex items-center gap-3">
+                <button id="play-btn"
+                    class="rounded-full bg-brand px-8 py-3 text-lg font-semibold transition hover:bg-brand-soft">Play</button>
+                <button id="step-btn"
+                    class="rounded-full border border-line-strong px-6 py-3 text-lg font-semibold text-muted transition hover:border-muted hover:text-white">Next day</button>
+            </div>
+            <div id="status-pill" class="rounded-full border border-line px-4 py-1.5 text-sm text-muted">Paused</div>
+            <div class="min-w-64 flex-1">
+                <div class="mb-1 flex justify-between text-xs text-muted">
+                    <span>Speed</span><span id="speed-label">1x &middot; 1 day/sec</span>
+                </div>
+                <input type="range" id="speed" min="0" max="4" step="1" value="1" class="w-full accent-brand">
+            </div>
+            <label id="teacher-row"
+                class="flex cursor-pointer items-center gap-3 rounded-2xl border border-line px-4 py-2.5">
+                <input type="checkbox" id="teacher-mode" checked class="h-5 w-5 shrink-0 accent-accent">
+                <span>
+                    <span class="block text-sm font-semibold">Teacher mode</span>
+                    <span class="block text-xs text-dim">Pause and explain each new pattern</span>
+                </span>
+            </label>
+        </section>
+
+        <!-- The newswire sits above the charts because it is the first thing that changes as
+             the clock moves: a strip of headlines drifting steadily past. Stories arrive
+             whether or not anyone is watching, and clicking one stops the clock so it can
+             actually be read. -->
+        <section id="news-panel" class="mb-6 rounded-3xl border border-line bg-surface p-5">
+            <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+                <div class="flex flex-wrap items-baseline gap-3">
+                    <h2 class="text-sm font-semibold uppercase tracking-widest text-muted">Newswire</h2>
+                    <span class="text-xs text-dim">Headlines about your stocks. Click one to pause and read it.</span>
+                </div>
+                <span id="news-count" class="rounded-full border border-line px-3 py-1 text-xs text-muted">&mdash;</span>
+            </div>
+            <div id="news-viewport" class="newswire-viewport">
+                <div id="news-track" class="newswire-track">
+                    <p class="text-xs text-dim">Headlines show up as the clock moves.</p>
+                </div>
+            </div>
+            <div id="news-reader" class="mt-4 hidden rounded-2xl border border-brand/40 bg-brand/10 p-5">
+                <div class="flex items-start justify-between gap-4">
+                    <div>
+                        <p class="text-xs font-semibold uppercase tracking-widest text-brand-soft">Newswire story</p>
+                        <h3 id="reader-headline" class="mt-1 text-xl font-semibold leading-snug"></h3>
+                        <p id="reader-meta" class="mt-1 text-xs text-dim"></p>
+                    </div>
+                    <button id="reader-close" type="button" aria-label="Close the story"
+                        class="shrink-0 rounded-full border border-line px-3 py-1.5 text-sm text-muted transition hover:border-muted hover:text-white">&times;</button>
+                </div>
+                <p id="reader-body" class="mt-3 text-sm leading-relaxed text-muted"></p>
+                <div class="mt-4 flex flex-wrap items-center gap-3">
+                    <button id="reader-resume" type="button"
+                        class="rounded-full bg-brand px-5 py-2.5 text-sm font-semibold transition hover:bg-brand-soft">
+                        Start the clock again
+                    </button>
+                    <span id="reader-status" class="text-xs text-dim">The clock is paused while you read.</span>
+                </div>
+            </div>
+        </section>
+
         <!-- Watchlist: every symbol in the basket, with its position size inline. Clicking
              one moves the chart, trade panel and AI read onto it. -->
         <div id="watchlist" class="mb-6 flex flex-wrap gap-3"></div>
@@ -59,9 +140,14 @@
         <!-- Keep the utility panels close to the charts instead of marooning them in a
              skinny far-right rail. The sidebar gets two columns on wide screens so its
              cards use the empty lower half of the page instead of making one long stack. -->
-        <div class="grid grid-cols-1 gap-6 lg:grid-cols-3 xl:grid-cols-5">
+        <!-- Below 2xl the charts take the whole page and the utility cards pack underneath
+             them, three abreast; from 2xl up the charts keep three fifths and the cards
+             move beside them at two, two abreast. Putting a single 350px column of cards
+             beside the charts on a laptop is what made the page scroll for three screens
+             with an empty half underneath the equity line. -->
+        <div class="grid grid-cols-1 gap-6 lg:grid-cols-5">
 
-            <section class="grid grid-cols-1 content-start gap-6 lg:col-span-2 xl:col-span-3">
+            <section class="grid grid-cols-1 content-start gap-6 lg:col-span-5 2xl:col-span-3">
                 <div class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-4 flex flex-wrap items-baseline justify-between gap-3">
                         <h2 class="text-lg font-semibold">
@@ -78,11 +164,11 @@
                 </div>
 
                 <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                    <div class="rounded-3xl border border-line bg-surface p-6">
+                    <div data-collapse="rsi" class="rounded-3xl border border-line bg-surface p-6">
                         <h2 class="mb-3 text-lg font-semibold">RSI (14)</h2>
                         <div class="h-[300px]"><canvas id="rsi-chart"></canvas></div>
                     </div>
-                    <div class="rounded-3xl border border-line bg-surface p-6">
+                    <div data-collapse="macd" class="rounded-3xl border border-line bg-surface p-6">
                         <h2 class="mb-3 text-lg font-semibold">MACD (12, 26, 9)</h2>
                         <div class="h-[300px]"><canvas id="macd-chart"></canvas></div>
                     </div>
@@ -91,7 +177,7 @@
                 <!-- The two portfolio views: what the basket did relative to itself, and
                      what the account is actually worth. -->
                 <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                    <div class="rounded-3xl border border-line bg-surface p-6">
+                    <div data-collapse="basket" class="rounded-3xl border border-line bg-surface p-6">
                         <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
                             <h2 class="text-lg font-semibold">Basket, rebased to 100</h2>
                             <span id="basket-window" class="text-xs text-dim"></span>
@@ -99,7 +185,7 @@
                         <div class="h-[300px]"><canvas id="basket-chart"></canvas></div>
                         <p id="basket-note" class="mt-3 text-xs leading-relaxed text-dim"></p>
                     </div>
-                    <div class="rounded-3xl border border-line bg-surface p-6">
+                    <div data-collapse="equity" class="rounded-3xl border border-line bg-surface p-6">
                         <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
                             <h2 class="text-lg font-semibold">Account equity</h2>
                             <span id="equity-note" class="text-xs text-dim"></span>
@@ -112,40 +198,15 @@
                     </div>
                 </div>
 
-                <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                    <div class="rounded-3xl border border-line bg-surface p-6">
-                        <div class="mb-3 flex items-center justify-between gap-3">
-                            <h2 class="text-lg font-semibold">Controls</h2>
-                            <div id="status-pill" class="rounded-full border border-line px-4 py-1.5 text-sm text-muted">Paused</div>
-                        </div>
-                        <div class="flex flex-wrap items-center gap-3">
-                            <button id="play-btn" class="rounded-full bg-brand px-8 py-3 text-lg font-semibold transition hover:bg-brand-soft">Play</button>
-                            <button id="step-btn" class="rounded-full border border-line-strong px-8 py-3 text-lg font-semibold text-muted transition hover:border-muted hover:text-white">Next day</button>
-                        </div>
-                        <div class="mt-4">
-                            <div class="mb-2 flex justify-between text-sm text-muted"><span>Speed</span><span id="speed-label">1x &middot; 1 day/sec</span></div>
-                            <input type="range" id="speed" min="0" max="4" step="1" value="1" class="w-full accent-brand">
-                        </div>
-                    </div>
-                    <div class="rounded-3xl border border-line bg-surface p-6">
-                        <h2 class="mb-3 text-lg font-semibold">Learning options</h2>
-                        <label id="teacher-row" class="flex cursor-pointer items-start gap-3">
-                            <input type="checkbox" id="teacher-mode" checked class="mt-1 h-5 w-5 shrink-0 accent-accent">
-                            <span><span class="block font-semibold">Teacher mode</span><span class="block text-sm text-dim">Pause when a new pattern appears and explain it before continuing.</span></span>
-                        </label>
-                    </div>
-                </div>
-
             </section>
 
-            <!-- The right rail follows the player's questions: what can I trade, what is
+            <!-- The utility cards follow the player's questions: what can I trade, what is
                  happening, what is happening to my cash, then the advanced tools. Grid rows
                  would set every card in a row to the tallest one's height and leave a hole
-                 under its neighbour, so these pack one after another instead: one column
-                 normally, two balanced ones once the screen is wide enough, which is what
-                 lines the rail up with the charts beside it. -->
-            <section class="card-flow card-flow--2 lg:col-span-1 xl:col-span-2">
-                <div class="rounded-3xl border border-line bg-surface p-6">
+                 under its neighbour, so these pack one after another instead (see
+                 .card-flow), which is also what lines them up with the charts. -->
+            <section class="card-flow lg:col-span-5 2xl:col-span-2">
+                <div data-collapse="trade" class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-4 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">Trade</h2>
                         <span id="trade-position" class="rounded-full border border-line px-3 py-1 text-xs text-muted">
@@ -183,7 +244,7 @@
                     </p>
                 </div>
 
-                <div class="rounded-3xl border border-line bg-surface p-6">
+                <div data-collapse="holdings" class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-4 flex items-center justify-between gap-3">
                             <div>
                                 <h2 class="text-lg font-semibold">Holdings</h2>
@@ -206,7 +267,7 @@
                 </div>
 
                 <!-- The one card that has to stand out, in the mock's teal. -->
-                <div id="sim-panel"
+                <div id="sim-panel" data-collapse="future" data-collapse-default="closed"
                     class="rounded-3xl border border-accent/30 bg-gradient-to-br from-accent/25 via-accent/10 to-transparent p-6">
                     <div class="mb-4 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">Simulated future</h2>
@@ -295,25 +356,7 @@
                         class="mt-3 hidden rounded-xl border border-down/40 bg-down/10 p-3 text-sm text-down"></p>
                 </div>
 
-                <div id="news-panel" class="rounded-3xl border border-line bg-surface p-6">
-                    <div class="mb-1 flex items-center justify-between gap-3">
-                        <h2 class="text-lg font-semibold">News</h2>
-                        <span id="news-count"
-                            class="rounded-full border border-line px-3 py-1 text-xs text-muted">&mdash;</span>
-                    </div>
-                    <p class="mb-4 text-xs text-dim">
-                        Headlines about the stocks you picked. Most of it will not move the price.
-                    </p>
-                    <div id="news-feed" class="max-h-[28rem] space-y-2 overflow-y-auto text-sm">
-                        <p class="text-xs text-dim">Headlines show up as the clock moves.</p>
-                    </div>
-                    <p class="mt-4 border-t border-line pt-4 text-[11px] leading-relaxed text-dim">
-                        Practice newswire: stories about price moves come from the real chart, and the
-                        rest is made up.
-                    </p>
-                </div>
-
-                <div id="bank-panel" class="rounded-3xl border border-line bg-surface p-6">
+                <div id="bank-panel" data-collapse="bank" class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-3 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">Your bank</h2>
                         <span id="bank-source"
@@ -337,7 +380,7 @@
 
                 <!-- The bank side of the account. Trading is not the only thing taking
                      money out, and this is where that becomes obvious. -->
-                <div id="bills-panel" class="rounded-3xl border border-line bg-surface p-6">
+                <div id="bills-panel" data-collapse="bills" class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-1 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">Bills &amp; dividends</h2>
                         <span id="bills-runway"
@@ -361,15 +404,40 @@
                         </div>
                         <p class="mt-2 text-xs leading-relaxed text-muted">
                             A dividend is cash a company distributes to shareholders. You receive it
-                            only when you own shares before the ex-dividend date; it is investment
-                            income, not a paycheck. The payment goes straight into cash and counts
-                            toward your stock return.
+                            only when you own shares <span class="font-semibold text-up">before</span>
+                            the ex-dividend date; it is investment income, not a paycheck, and it
+                            counts toward your stock return either way.
                         </p>
-                        <div id="dividend-history" class="mt-3 space-y-2 text-xs"></div>
+
+                        <!-- The ex-date is a deadline to own the shares, so it is worth seeing
+                             before it arrives rather than in the ledger afterwards. -->
+                        <p class="mt-4 text-[11px] font-semibold uppercase tracking-widest text-up/80">
+                            Next payouts
+                        </p>
+                        <div id="dividend-schedule" class="mt-2 space-y-2 text-xs">
+                            <p class="text-dim">Buy a dividend-paying stock to see its ex-dates here.</p>
+                        </div>
+
+                        <label class="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-up/20 bg-ink-soft px-3 py-2.5">
+                            <input type="checkbox" id="reinvest-toggle" class="tick mt-0.5">
+                            <span>
+                                <span class="block text-xs font-semibold text-up">Reinvest dividends</span>
+                                <span class="block text-[11px] leading-relaxed text-dim">
+                                    Take each payout as more shares instead of cash, the way a DRIP
+                                    account does. The shares bought this way are yours for the next
+                                    ex-date too, so a position compounds without you touching it.
+                                </span>
+                            </span>
+                        </label>
+
+                        <p class="mt-4 text-[11px] font-semibold uppercase tracking-widest text-up/80">
+                            Paid so far
+                        </p>
+                        <div id="dividend-history" class="mt-2 space-y-2 text-xs"></div>
                     </div>
                 </div>
 
-                <div class="rounded-3xl border border-line bg-surface p-6">
+                <div data-collapse="coach" class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-4 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">AI coach</h2>
                         <button id="predict-btn"
@@ -386,7 +454,8 @@
                     </div>
                 </div>
 
-                <div class="rounded-3xl border border-line bg-surface p-6">
+                <div data-collapse="patterns" data-collapse-default="closed"
+                    class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-3 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">Pattern school</h2>
                         <span id="pattern-progress"
@@ -410,10 +479,11 @@
          charts, and Escape, the close button or a click outside puts it away. -->
     <button id="signals-toggle" type="button" aria-controls="signal-drawer" aria-expanded="false"
         title="Signals seen"
-        class="fixed right-0 top-1/2 z-40 flex -translate-y-1/2 flex-col items-center gap-2 rounded-l-lg border border-r-0 border-line-strong bg-surface/95 py-4 pl-1.5 pr-1 text-center shadow-xl backdrop-blur transition hover:border-muted">
-        <span class="signals-tab text-[11px] font-semibold uppercase tracking-widest text-muted">Signals</span>
+        class="fixed right-0 top-1/2 z-40 flex -translate-y-1/2 flex-col items-center gap-2 rounded-l-2xl border border-r-0 border-brand bg-brand px-2 py-5 text-center text-white shadow-2xl transition hover:bg-brand-soft">
+        <span class="signals-badge-dot" aria-hidden="true"></span>
+        <span class="signals-tab text-xs font-bold uppercase tracking-widest">Signals</span>
         <span id="signals-count"
-            class="hidden rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none">0</span>
+            class="hidden rounded-full bg-warn px-2 py-0.5 text-xs font-bold leading-none text-ink">0</span>
     </button>
 
     <div id="signal-backdrop" class="fixed inset-0 z-40 hidden bg-ink/70 backdrop-blur-sm"></div>

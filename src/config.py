@@ -29,6 +29,27 @@ def _build_dsn() -> str:
 
 DATABASE_DSN = _build_dsn()
 
+# --- the connection pool --------------------------------------------------
+# Every request thread shares one pool, and a checkout that cannot be satisfied is what
+# turns a burst of page loads (or several tabs) into a clock that never moves. The pool
+# is sized here rather than in the access layer so it can be tuned without a code change,
+# and every acquire has a deadline: waiting forever is never the right answer.
+DB_POOL_MIN = int(os.getenv("DB_POOL_MIN", "2"))
+DB_POOL_MAX = int(os.getenv("DB_POOL_MAX", "12"))
+# Seconds to establish a connection. Without it a black-holed network leaves a thread
+# waiting on a socket for the operating system's default, which is measured in minutes.
+DB_CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "10"))
+# Ceiling on a single statement. A query that runs away holds a connection out of the
+# pool for as long as it likes, and that is how a slow query becomes an outage.
+DB_STATEMENT_TIMEOUT_MS = int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "20000"))
+# How long a thread may wait for a free connection before being told to retry.
+DB_POOL_WAIT_SECONDS = float(os.getenv("DB_POOL_WAIT_SECONDS", "10"))
+# A pooled connection that has been sitting idle may already be dead - a server restart, a
+# dropped socket, a load balancer reaping it - and nothing says so until a query is run on
+# it. Past this many seconds of idleness the connection gets one cheap round trip before
+# it is trusted with the player's next click.
+DB_POOL_IDLE_PING_SECONDS = float(os.getenv("DB_POOL_IDLE_PING_SECONDS", "30"))
+
 GEMINI_API_KEYS = [
     key for key in (os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY2")) if key
 ]

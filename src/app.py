@@ -63,6 +63,14 @@ with app.app_context():
     except Exception:  # noqa: BLE001 - never block startup on the schema step
         app.logger.warning("could not apply schema at startup", exc_info=True)
 
+    # Dial the database now, on the main thread, rather than from whichever request
+    # happens to arrive first: the pool's connections are made under a lock, so the first
+    # page load otherwise pays for all of them and every page load beside it waits.
+    try:
+        app.logger.info("database pool ready: %s", database.warm_up())
+    except Exception:  # noqa: BLE001 - a missing database is reported per request
+        app.logger.warning("could not open the database pool at startup", exc_info=True)
+
 
 def _warm_ai_import() -> None:
     """Import the MCP stack in the background so the first click does not pay for it.

@@ -86,8 +86,14 @@ html {
 
 /* Utility cards. A grid would set every card in a row to the height of the tallest one and
    leave a hole under its shorter neighbour, which is what made the right rail read as a
-   column of empty space. These cards pack one after another instead, and only split into
-   two balanced columns once there is real width to fill. */
+   column of empty space. These cards pack one after another instead, so they fill whatever
+   height they are given.
+
+   The column count follows the width this packer is actually handed, not just the screen:
+   below xl the cards sit under the charts at full page width, and from xl on they ride
+   beside them at two fifths. Three columns over the full width and two beside the charts
+   is what keeps a card roughly the same size in both, which is the whole point - a single
+   long strip of cards down one side is exactly what this is here to avoid. */
 @layer components {
     .card-flow > * {
         break-inside: avoid;
@@ -98,10 +104,117 @@ html {
         margin-bottom: 0;
     }
 
-    @media (min-width: 80rem) {
-        .card-flow--2 {
-            columns: 2;
+    @media (min-width: 64rem) {
+        .card-flow {
+            columns: 3;
             column-gap: 1.5rem;
+        }
+    }
+
+    @media (min-width: 96rem) {
+        .card-flow {
+            columns: 2;
+        }
+    }
+
+    /* Dragging a card into a new place. The card stays where it is until the pointer
+       passes over a neighbour, and a dashed outline is what says "this is moving". */
+    .card-flow > .is-dragging {
+        opacity: 0.4;
+        outline: 1px dashed var(--color-line-strong);
+        outline-offset: 4px;
+    }
+
+    .card-grip {
+        cursor: grab;
+    }
+
+    .card-grip:active {
+        cursor: grabbing;
+    }
+}
+
+/* The newswire strip. The track holds the day's headlines twice over so the loop can wrap
+   without a visible jump, and it stops on hover - and while a story is open in the reader -
+   because a headline nobody can click is just decoration. */
+@layer components {
+    .newswire-viewport {
+        overflow: hidden;
+        -webkit-mask-image: linear-gradient(to right, transparent, #000 3%, #000 97%, transparent);
+        mask-image: linear-gradient(to right, transparent, #000 3%, #000 97%, transparent);
+    }
+
+    .newswire-track {
+        display: inline-flex;
+        gap: 0.75rem;
+        padding: 0.25rem 0;
+        white-space: nowrap;
+        animation: newswire-drift var(--newswire-duration, 90s) linear infinite;
+        will-change: transform;
+    }
+
+    .newswire-track:hover,
+    .newswire-viewport.is-reading .newswire-track {
+        animation-play-state: paused;
+    }
+
+    @keyframes newswire-drift {
+        from {
+            transform: translateX(0);
+        }
+
+        to {
+            transform: translateX(-50%);
+        }
+    }
+
+    /* Cards the player can fold away. The header row stays, everything under it hides, and
+       the choice is remembered per card - a dashboard nobody can quieten down is the thing
+       this is here to fix. */
+    .card-collapsed > .collapse-body {
+        display: none;
+    }
+
+    .collapse-toggle svg {
+        transition: transform 140ms ease;
+    }
+
+    .card-collapsed .collapse-toggle svg {
+        transform: rotate(-90deg);
+    }
+
+    /* The tab that opens the signal drawer lives on the right edge, where a hairline grey
+       sliver went unnoticed; the dot pulses while something in it has not been read. */
+    .signals-badge-dot {
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 9999px;
+        background: #ffffff;
+        opacity: 0.5;
+    }
+
+    .signals-attention .signals-badge-dot {
+        animation: signals-pulse 1.6s ease-in-out infinite;
+    }
+
+    @keyframes signals-pulse {
+        0%,
+        100% {
+            transform: scale(1);
+            opacity: 0.5;
+        }
+
+        50% {
+            transform: scale(1.7);
+            opacity: 1;
+        }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+
+        .newswire-track,
+        .signals-attention .signals-badge-dot {
+            animation: none;
         }
     }
 }
