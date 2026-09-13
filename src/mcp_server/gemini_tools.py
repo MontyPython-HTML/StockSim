@@ -188,6 +188,12 @@ def format_context(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+PLAIN_STYLE = (
+    "Write for someone who has never traded: short sentences, everyday words, no jargon. If you "
+    "use a term like RSI or MACD, say what it means in a few words."
+)
+
+
 def generate_prediction(ticker: str, as_of: date, df: pd.DataFrame) -> dict:
     prompt = f"""You are a trading coach in a teaching simulator. Today is {as_of} and the
 student is trading {ticker}. Below is the real price and indicator history available to them.
@@ -196,12 +202,12 @@ You cannot see beyond {as_of}.
 {format_context(df)}
 
 Give your read on the next few sessions and, more importantly, teach the student which signals
-you are reading and why. Reply as JSON with exactly these keys:
+you are reading and why. {PLAIN_STYLE} Reply as JSON with exactly these keys:
 - "direction": one of "up", "down", "flat"
 - "confidence": number between 0 and 1
-- "rationale": 2 sentences, plain English, naming the specific indicators you used
-- "referenced_indicators": array of short strings, e.g. ["SMA20 above SMA50", "RSI 68"]
-- "what_to_watch": one sentence naming the level or signal that would prove you wrong
+- "rationale": 2 short sentences in everyday words, naming the indicators you used
+- "referenced_indicators": array of short strings, e.g. ["20-day average above 50-day average", "RSI 68"]
+- "what_to_watch": one short sentence on what would prove you wrong
 """
     data = generate_json(prompt)
     return {
@@ -282,15 +288,15 @@ is {ticker}, the in-game date is {as_of}, it last closed at {recent_close:.2f}, 
 Context (the only data you may reference):
 {format_context(df)}
 
-{subject} Reply as JSON with exactly these keys:
+{subject} {PLAIN_STYLE} Reply as JSON with exactly these keys:
 - "headline": under 90 characters, written like a newswire headline
-- "summary": one sentence of detail
+- "summary": one short sentence of detail
 - "sentiment": number from -1 (very bearish) to 1 (very bullish)
 - "magnitude": number from 0 (barely noticed) to 1 (market-moving)
 - "decay_days": integer 1-30, how many sessions the effect takes to fade
 - "sector": the affected sector name in upper case (e.g. "TECHNOLOGY"), or null if the
   story is company-specific
-- "lesson": one sentence that should {lesson_hint}
+- "lesson": one short sentence that should {lesson_hint}
 """
     data = generate_json(prompt, temperature=1.0, cache=False)
 
@@ -361,7 +367,8 @@ Recent price and indicator history:
 
 Explain this pattern to a beginner who is looking at the numbers above right now. Ground every
 claim in the values listed - name the actual RSI reading, the actual averages - so the lesson
-points at their chart and not at a textbook.
+points at their chart and not at a textbook. {PLAIN_STYLE} On their screen the MACD line is blue,
+its signal line is yellow, the 20-day average is yellow and the 50-day average is blue.
 
 The reference explanation this curriculum is built on (stay consistent with it, deepen it, do
 not contradict it):
@@ -373,14 +380,14 @@ not contradict it):
   watch next: {pattern['watch_next']}
 
 Reply as JSON with exactly these keys:
-- "what_it_is": 2 sentences in plain English, referring to this chart's numbers
-- "how_to_spot": array of 2-4 short strings, each a concrete check the student can make on
-  this chart (e.g. "SMA20 at 182.40 is only just above SMA50 at 181.05")
-- "why_it_matters": 1 sentence on what a disciplined trader does about it
-- "common_mistake": 1 sentence on how a beginner misreads this exact situation
-- "watch_next": 1 sentence naming the level or signal that would confirm or invalidate it
+- "what_it_is": 2 short sentences in everyday words, using this chart's numbers
+- "how_to_spot": array of 2-4 short strings, each a simple check the student can make on
+  this chart (e.g. "The 20-day average (182.40) is just above the 50-day average (181.05)")
+- "why_it_matters": 1 short sentence on what a careful trader does about it
+- "common_mistake": 1 short sentence on a mistake beginners make here
+- "watch_next": 1 short sentence on what to watch next to see if the pattern was right
 - "confidence": number 0-1, how clear-cut this example is on the chart above
-- "lesson": one sentence summarising the takeaway
+- "lesson": one short sentence with the main takeaway
 """
     data = generate_json(prompt)
 

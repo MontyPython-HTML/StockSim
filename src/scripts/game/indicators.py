@@ -58,8 +58,8 @@ def detect_signals(df: pd.DataFrame) -> list[dict]:
             {
                 "name": "Golden cross",
                 "direction": "bullish",
-                "message": "The 20-day average crossed above the 50-day average. Short-term "
-                "momentum has overtaken the longer trend, which traders read as bullish.",
+                "message": "The 20-day average price moved above the 50-day average. The stock "
+                "may be turning upward.",
             }
         )
     elif _crossed_above(sma50, sma20):
@@ -67,8 +67,8 @@ def detect_signals(df: pd.DataFrame) -> list[dict]:
             {
                 "name": "Death cross",
                 "direction": "bearish",
-                "message": "The 20-day average crossed below the 50-day average. Short-term "
-                "momentum is fading against the longer trend, which traders read as bearish.",
+                "message": "The 20-day average price moved below the 50-day average. The stock "
+                "may be turning downward.",
             }
         )
 
@@ -77,8 +77,8 @@ def detect_signals(df: pd.DataFrame) -> list[dict]:
             {
                 "name": "MACD bullish crossover",
                 "direction": "bullish",
-                "message": "MACD crossed above its signal line, meaning momentum is turning "
-                "upward. It often leads price, so it is an early entry hint.",
+                "message": "The blue MACD line crossed above the yellow line. The stock is "
+                "picking up speed upward. This is an early hint, so it can be wrong.",
             }
         )
     elif _crossed_above(macd_signal, macd):
@@ -86,8 +86,8 @@ def detect_signals(df: pd.DataFrame) -> list[dict]:
             {
                 "name": "MACD bearish crossover",
                 "direction": "bearish",
-                "message": "MACD crossed below its signal line, meaning upward momentum is "
-                "stalling. Traders treat this as a warning to tighten or exit.",
+                "message": "The blue MACD line crossed below the yellow line. The stock is "
+                "slowing down. Many traders see this as a warning.",
             }
         )
 
@@ -97,8 +97,8 @@ def detect_signals(df: pd.DataFrame) -> list[dict]:
                 {
                     "name": "RSI overbought",
                     "direction": "bearish",
-                    "message": f"RSI pushed above 70 (now {rsi.iloc[-1]:.0f}). The stock has "
-                    "rallied hard and may be due for a pullback.",
+                    "message": f"RSI went above 70 (now {rsi.iloc[-1]:.0f}). The stock went up "
+                    "fast and may cool off.",
                 }
             )
         elif rsi.iloc[-2] >= 30 > rsi.iloc[-1]:
@@ -106,8 +106,8 @@ def detect_signals(df: pd.DataFrame) -> list[dict]:
                 {
                     "name": "RSI oversold",
                     "direction": "bullish",
-                    "message": f"RSI dropped below 30 (now {rsi.iloc[-1]:.0f}). The stock has "
-                    "sold off hard and may be due for a bounce.",
+                    "message": f"RSI went below 30 (now {rsi.iloc[-1]:.0f}). The stock went down "
+                    "fast and may bounce back.",
                 }
             )
 
@@ -121,8 +121,8 @@ def detect_signals(df: pd.DataFrame) -> list[dict]:
                 {
                     "name": "Volume spike",
                     "direction": "neutral",
-                    "message": f"Volume came in {multiple:.1f}x its 20-day average. Big volume "
-                    "means conviction - it confirms whichever way price moved today.",
+                    "message": f"About {multiple:.1f} times the usual number of shares traded "
+                    "today. Lots of people care about today's price move.",
                 }
             )
 

@@ -95,7 +95,7 @@ function createPriceChart(canvas) {
             responsive: true, maintainAspectRatio: false,
             interaction: { mode: 'index', intersect: false },
             plugins: {
-                legend: { labels: { ...legendBox, filter: (i) => i.text !== 'Volume' } },
+                legend: { labels: { ...legendBox, filter: (i, data) => i.text !== 'Volume' && !data.datasets[i.datasetIndex].excluded } },
             },
             scales: baseScales({
                 volume: { display: false, beginAtZero: true, max: 0 },

@@ -30,7 +30,8 @@ All JSON endpoints live under `/api` ([src/routes/game_routes.py](../src/routes/
 
 Renders the "start a session" landing page. Passes the ingested tickers, the full ticker
 catalog (grouped by sector in the UI, symbols without history are disabled), catalog
-stats, and the default Nessie funding customer into the template.
+stats, the default Nessie funding customer and the training level catalog into the template.
+The level track sits above the full-simulation form.
 
 ### `GET /game/<session_id>`
 
@@ -286,13 +287,20 @@ loaded. Seeded from `src/scripts/ingestion/universes.py` (`nasdaq100` plus a sma
   "tickers": [
     { "ticker": "AAPL", "company_name": "Apple", "sector": "Technology",
       "universe": "nasdaq100", "is_tech": true,
-      "first_day": "2022-01-03", "last_day": "2024-12-31", "row_count": 753, "has_data": true },
+      "first_day": "2022-01-03", "last_day": "2024-12-31", "row_count": 753, "has_data": true,
+      "description": "Makes the iPhone, Mac computers, iPad and Apple Watch, and sells services like the App Store and Apple Music." },
     { "ticker": "ABNB", "company_name": "Airbnb", "sector": "Consumer Discretionary",
       "universe": "nasdaq100", "is_tech": false,
-      "first_day": null, "last_day": null, "row_count": 0, "has_data": false }
+      "first_day": null, "last_day": null, "row_count": 0, "has_data": false,
+      "description": "Runs a website and app where people rent out their homes or rooms to travelers." }
   ]
 }
 ```
+
+`description` is a one- or two-sentence plain-English summary of the company, written for
+beginners, from [`descriptions.py`](../src/scripts/ingestion/descriptions.py). A ticker without
+one gets a generic line built from its name and sector. The game screen shows it in the hover
+card on watchlist tiles, holdings, the chart title and the newspaper's price box.
 
 ---
 
@@ -458,6 +466,9 @@ bar also gets a volume spike.
 | GET    | `/api/session/<id>/simulation`     | Fork parameters, bounds, applied shocks    |
 | POST   | `/api/session/<id>/shock`          | Inject one specific market event           |
 | GET    | `/api/session/<id>/basket`         | Rebased basket comparison + equity curve   |
+| GET    | `/api/session/<id>/news`           | One day's Daily Ledger edition             |
+| GET    | `/api/levels`                      | Training level catalog                     |
+| POST   | `/api/levels/<number>/start`       | Start a training level                     |
 
 ---
 
@@ -531,6 +542,8 @@ Where each piece of this API actually lives, and the exact handler for each endp
 | [`src/scripts/game/engine.py`](../src/scripts/game/engine.py) | Game rules: sessions, trades, advancing days, scheduling AI calls |
 | [`src/scripts/game/indicators.py`](../src/scripts/game/indicators.py) | SMA/RSI/MACD/volume math and signal detection |
 | [`src/scripts/game/patterns.py`](../src/scripts/game/patterns.py) | The pattern syllabus: lesson text per pattern, and which one to teach next |
+| [`src/scripts/game/levels.py`](../src/scripts/game/levels.py) | Training levels: catalog, picking a stretch of history, grading trades |
+| [`src/scripts/game/news.py`](../src/scripts/game/news.py) | The Daily Ledger: chart-based stories, filler, and daily editions |
 | [`src/scripts/game/performance.py`](../src/scripts/game/performance.py) | Portfolio views: the rebased basket comparison and the account equity curve |
 | [`src/scripts/game/price_cache.py`](../src/scripts/game/price_cache.py) | In-memory price/indicator cache per ticker |
 | [`src/scripts/game/price_source.py`](../src/scripts/game/price_source.py) | Picks real vs simulated prices for a session; the surface `engine.py` talks to |
@@ -717,29 +730,134 @@ card in a waiting state, and polls `GET /state` until the matching `PATTERN_LESS
 Gemini is unreachable the lesson still arrives from the built-in syllabus
 ([`patterns.py`](../src/scripts/game/patterns.py)) with `source: "offline"`.
 
-The walkthrough is a thirteen-step tour over the real panels, shown automatically on a first
+The walkthrough is a fourteen-step tour over the real panels, shown automatically on a first
 visit and re-openable from **How this works** in the header.
 
 Signals from `/advance` do not pop up as notifications. They go into the **Signals** drawer on
-the right edge, whose tab counts the unread ones; the walkthrough points it out.
+the right edge, whose tab counts the unread ones; the walkthrough points it out. The **News** tab
+sits above it. Walkthrough steps for panels the session hides are skipped, and a training level
+opens on its briefing card instead of the walkthrough.
 
-## The newswire
+## The Daily Ledger (news)
+
+News lives behind the **News** tab on the right edge of the game screen. Opening it pauses the
+clock and shows that day's paper; **Earlier** / **Later**, the date picker or the arrow keys page
+back through the last 20 trading days. Closing it leaves the clock paused, and **Resume the
+clock** appears when it had been running. The tab's badge counts stories newer than the last
+edition read.
 
 `GET /state` and `POST /advance` include **`news`**: newest first, at most 40 stories from the
-last 15 trading days of every watched symbol ([`news.py`](../src/scripts/game/news.py)).
+last 15 trading days of every watched symbol ([`news.py`](../src/scripts/game/news.py)). The tab
+uses it for the unread badge; it is `[]` in training levels without news.
 
 ```json
 { "news": [
-    { "id": "3f1c9a0b2e7d", "date": "2023-03-01", "ticker": "MSFT",
-      "headline": "MSFT tumbles 4.6% in heavy selling", "major": true },
-    { "id": "a81d44c0f913", "date": "2023-03-01", "ticker": "AAPL",
-      "headline": "Apple Inc. updates its employee travel policy", "major": false }
+    { "id": "3f1c9a0b2e7d", "date": "2023-03-01", "ticker": "MSFT", "company": "Microsoft",
+      "section": "Markets", "source": "Ledger Markets Desk",
+      "headline": "MSFT tumbles 4.6% in heavy selling",
+      "body": "Microsoft closed at $246.27, down 4.6% on the day, on volume about 2.1 times its 20-day average. The Ledger could not tie the move to any single announcement.",
+      "major": true },
+    { "id": "a81d44c0f913", "date": "2023-03-01", "ticker": null, "company": null,
+      "section": "Around town", "source": "Metro Business Journal",
+      "headline": "Regional bank opens a branch in Tampa",
+      "body": "The branch will offer extended Saturday hours.", "major": false }
 ] }
 ```
 
-- **Major** stories are the days a stock moved at least 4% or traded 2.5x its 20-day average
-  volume - the headline states the move, never an invented cause - plus the `NEWS_EVENT` and
+- **Major** stories are read off the real chart - a move of at least 4%, volume at 2.5x its
+  20-day average, the first 52-week closing high or low in more than 10 sessions, a 5- or
+  8-session streak - and never given an invented cause, plus the `NEWS_EVENT` and
   `MARKET_SHOCK` headlines from `ai_feed`.
-- **Filler** is invented routine company news, on roughly 40% of each symbol's trading days.
+- **Filler** is invented: routine company news and analyst notes (up to two per stock per day),
+  clickbait opinion columns, and local business stories with no ticker ("Around town").
+- An edition's lead is drawn from the day's loudest stories - big moves and clickbait alike - so
+  its position does not give away which story matters.
 - Stories are seeded by session, symbol and date, so they never change between refreshes and
   never appear before their date. The page does not show `major`: sorting is the exercise.
+
+### `GET /api/session/<session_id>/news`
+
+Query: `date` (optional, `YYYY-MM-DD`). It snaps to the latest played trading day on or before
+that date, so a future date returns today's paper and nothing is shown ahead of the clock.
+
+```json
+{
+  "date": "2023-03-01", "sim_date": "2023-03-01", "is_latest": true,
+  "dates": ["2023-03-01", "2023-02-28", "..."],
+  "previous": "2023-02-28", "next": null,
+  "lead": { "...": "one story, same shape as in news" },
+  "stories": [ { "...": "the rest of the day's stories" } ],
+  "closing_bell": [
+    { "ticker": "MSFT", "company": "Microsoft", "close": 246.27, "change_pct": -4.6, "volume_ratio": 2.1 }
+  ]
+}
+```
+
+Returns `400` for a training level that does not include news (levels 1-4).
+
+## Training levels
+
+Five short, graded runs on real history, meant to be played before the full simulation. Each one
+switches on only the tools it teaches ([`levels.py`](../src/scripts/game/levels.py)).
+
+| # | Level | Tools on screen | A trade follows the rule when | Days | Stocks |
+|---|---|---|---|---|---|
+| 1 | RSI only | RSI | buy at RSI ≤ 35, sell at RSI ≥ 65 | 90 | 1 |
+| 2 | MACD only | MACD | it comes within 3 days of MACD crossing its signal line in that direction | 90 | 1 |
+| 3 | The basket | basket chart, equity | after it you hold 3+ stocks from 2+ sectors | 120 | 5 |
+| 4 | RSI + MACD | RSI, MACD | a MACD cross within 5 days **and** RSI ≤ 40 (buy) / ≥ 60 (sell) in the last 10 days | 120 | 1 |
+| 5 | Everything | every panel, news, AI coach | it matches the rule of level 1, 2 or 4 | 150 | 4 |
+
+- Every level starts with $10,000, no Nessie bills or paychecks, and Teacher mode on.
+- Signals, pattern lessons and the Pattern school list only cover the level's own patterns, and
+  levels 1-4 schedule no AI predictions or headlines.
+- A level refuses `/simulate`; levels 1-4 also refuse `/predict` and `/news` (`400`).
+- Each run picks a fresh stretch from 2010 onward where the level's setups actually happen: a buy
+  setup before a sell setup for the single-stock levels, RSI extremes somewhere in the basket for
+  level 5, and a basket spread across sectors for levels 3 and 5.
+
+### `GET /api/levels`
+
+`{"levels": [...]}`. Each entry has `number`, `count`, `slug`, `title`, `tagline`, `tools`,
+`panels`, `patterns`, `brief` (paragraphs), `buy_rule`, `sell_rule`, `trading_days`,
+`basket_size` and `goal_labels`.
+
+### `POST /api/levels/<number>/start`
+
+Body (optional): `{"seed": 42}` to replay the same stretch. Returns `201` with the normal session
+state; an unknown level number returns `400`.
+
+### `level` on the session state object
+
+`null` for a full simulation. For a level it is the catalog entry plus live grading:
+
+```json
+{
+  "level": {
+    "number": 1, "count": 5, "title": "RSI only", "panels": ["patterns", "rsi", "signals"],
+    "trading_days": 90, "days_played": 41, "finished": false,
+    "goals": [
+      { "id": "finish", "label": "Play all 90 days", "met": false, "progress": "41 of 90 days" },
+      { "id": "follow", "label": "Make 2 trades that follow the rule", "met": false, "progress": "1 of 2 so far" },
+      { "id": "profit", "label": "End with more money than you started with", "met": false, "progress": "+2.31% so far" }
+    ],
+    "stars": 0, "passed": false, "benchmark_pct": null, "next_level": 2,
+    "trades": [
+      { "date": "2018-11-20", "ticker": "ADBE", "side": "BUY", "shares": 18.0, "price": 221.4,
+        "followed": true, "why": "RSI was 31. The rule says 35 or lower." }
+    ]
+  }
+}
+```
+
+- `panels` names what the page shows: `rsi`, `macd`, `basket`, `trend` (the SMA lines), `volume`,
+  `news`, `ai`, `signals` and `patterns`. `sim` and `bank` are never part of a level.
+- Stars are awarded when the run finishes, one per goal met. A level is **passed** when it has
+  finished with the `follow` goal met. Level 5's third goal is beating an equal-weight buy-and-hold
+  of its basket (`benchmark_pct`).
+- Like any session, a level finishes on the tick after its last trading day.
+
+Progress (best stars, passed) is kept per browser in `localStorage` under
+`tradingTeacher.levels`. The start page locks each level until the one before it is passed and
+offers **Unlock all** and **Reset progress**. The results card offers **Replay level** and
+**Next level**.

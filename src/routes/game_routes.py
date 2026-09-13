@@ -9,8 +9,9 @@ from werkzeug.exceptions import HTTPException
 import config
 from scripts.api import gemini_mcp_client, nessie
 from scripts.database import database
-from scripts.game import engine, events, expenses, performance, price_source
+from scripts.game import engine, events, expenses, levels, news, performance, price_source
 from scripts.game.engine import AIUnavailable, GameError
+from scripts.ingestion import descriptions
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -124,13 +125,14 @@ def universe():
     ingest away, not an error.
     """
     tech_only = request.args.get("tech_only", "").lower() in ("1", "true", "yes")
+    rows = database.list_universe(universe=request.args.get("universe") or None, tech_only=tech_only)
+    for row in rows:
+        row["description"] = descriptions.describe(row["ticker"], row["company_name"], row["sector"])
     return jsonify(
         {
             "universe": request.args.get("universe") or None,
             "stats": database.universe_stats(),
-            "tickers": database.list_universe(
-                universe=request.args.get("universe") or None, tech_only=tech_only
-            ),
+            "tickers": rows,
         }
     )
 
@@ -206,6 +208,31 @@ def start_session():
         salary_amount=None if salary is None else Decimal(str(salary)).quantize(Decimal("0.01")),
     )
     return jsonify(state), 201
+
+
+@api.get("/levels")
+def level_catalog():
+    return jsonify({"levels": levels.catalog()})
+
+
+@api.post("/levels/<int:number>/start")
+def start_level(number: int):
+    body = request.get_json(silent=True) or {}
+    return jsonify(engine.start_level(number, seed=_optional_int(body.get("seed"), "seed"))), 201
+
+
+@api.get("/session/<session_id>/news")
+def session_news(session_id: str):
+    """One day's Daily Ledger, for any trading day the session has already played."""
+    bundle = database.load_session_bundle(session_id)
+    session = bundle["session"]
+    if not session:
+        raise GameError("Session not found")
+    if not levels.shows(levels.get(session.get("level")), "news"):
+        raise GameError("The Daily Ledger is not part of this level.")
+    day = _parse_date(request.args["date"], "date") if request.args.get("date") else None
+    sources = price_source.for_watchlist(session, bundle.get("watchlist"))
+    return jsonify(news.edition(session, _as_date(session["sim_date"]), day, bundle["events"], sources))
 
 
 @api.get("/session/<session_id>/state")

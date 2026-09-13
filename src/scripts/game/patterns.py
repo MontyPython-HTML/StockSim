@@ -69,206 +69,189 @@ class Pattern:
 # define the trend, then the momentum oscillator, then participation. `choose` reads this
 # order, so a session with several patterns on screen at once teaches them in this
 # sequence rather than in whatever order the watchlist happens to be in.
+# The text is written for someone who has never traded: short sentences, everyday words.
 PATTERNS: tuple[Pattern, ...] = (
     Pattern(
         slug="golden_cross",
         name="Golden cross",
         family="trend",
-        tension="Has the trend actually turned up, or is this a bounce?",
+        tension="Is the stock starting to go up for real?",
         what_it_is=(
-            "The 20-day average price crossing above the 50-day average. A moving average "
-            "is just the average close over the last N sessions, so a short one reacts "
-            "first: when the fast line climbs through the slow line, recent prices have "
-            "started to beat the older ones."
+            "The price chart has two average lines: the average price over the last 20 days and "
+            "over the last 50 days. A golden cross is when the 20-day line moves above the "
+            "50-day line. It means recent prices are higher than older ones."
         ),
         how_to_spot=(
-            "Two average lines are drawn over the price; find the faster one (SMA 20).",
-            "Look for the point where the fast line crosses from below to above the slow one.",
-            "It happens once, not continuously - a cross that happened weeks ago is history, not news.",
+            "Find the two average lines on the price chart.",
+            "Watch for the yellow 20-day line to cross above the blue 50-day line.",
+            "It only counts on the day it happens. A cross from weeks ago is old news.",
         ),
         why_it_matters=(
-            "It is a slow, hard-to-fake confirmation that buyers have taken control of the "
-            "trend. Trend followers enter on it and use the same averages as a place to exit."
+            "It is a slow but steady sign that the stock has turned upward."
         ),
         common_mistake=(
-            "Treating it as a buy signal on its own. It is built from past prices, so it "
-            "arrives after the move; if price is already far above both lines you are late."
+            "Buying just because of the cross. The lines are built from old prices, so the "
+            "stock may have already gone up a lot."
         ),
         watch_next=(
-            "Price holding above the 20-day average on the next few closes. A fast drop back "
-            "below both averages marks the cross as a head-fake."
+            "See if the price stays above the 20-day line for the next few days. If it drops "
+            "below both lines, the cross was a false alarm."
         ),
     ),
     Pattern(
         slug="death_cross",
         name="Death cross",
         family="trend",
-        tension="Is the uptrend finished, or is this a pullback in disguise?",
+        tension="Is the stock starting to go down for real?",
         what_it_is=(
-            "The 20-day average crossing below the 50-day average - the mirror image of the "
-            "golden cross. Recent closes have stopped keeping up with the average of the "
-            "last two months."
+            "The opposite of a golden cross. The 20-day average line drops below the 50-day "
+            "line. It means recent prices are lower than older ones."
         ),
         how_to_spot=(
-            "Find the two average lines over the price chart.",
-            "Watch for the fast line (SMA 20) crossing the slow one (SMA 50) downward.",
-            "Confirm the slope: both lines usually flatten or turn down just before it.",
+            "Find the two average lines on the price chart.",
+            "Watch for the yellow 20-day line to cross below the blue 50-day line.",
+            "Both lines often flatten out or point down just before it happens.",
         ),
         why_it_matters=(
-            "It marks the moment the prevailing trend has changed character. Risk managers "
-            "read it as a signal to cut position size rather than to short the stock."
+            "It warns that the stock has turned downward. Careful traders often own less of it."
         ),
         common_mistake=(
-            "Panic-selling the same day. Crosses whipsaw in choppy markets, and the average "
-            "already reflects weeks of falling prices - the damage is often done before you see it."
+            "Selling in a panic that day. These crosses can flip back quickly, and much of the "
+            "drop has usually already happened."
         ),
         watch_next=(
-            "Whether price reclaims the 50-day average within a few sessions. Stalling below "
-            "it keeps the downtrend intact."
+            "See if the price climbs back above the 50-day line in the next few days. If it "
+            "stays below, the drop may keep going."
         ),
     ),
     Pattern(
         slug="macd_bullish",
         name="MACD bullish crossover",
         family="momentum",
-        tension="Is momentum turning up before price does?",
+        tension="Is the stock starting to speed up?",
         what_it_is=(
-            "The MACD line crossing above its own signal line. MACD measures how far the "
-            "12-day average sits from the 26-day average; the signal line is a 9-day average "
-            "of MACD itself. MACD crossing up through it means the gap is widening in the "
-            "bullish direction."
+            "MACD shows whether a stock is speeding up or slowing down. When its blue line "
+            "crosses above its yellow line, the stock is picking up speed upward."
         ),
         how_to_spot=(
-            "Find the MACD panel under the price chart - two lines and a histogram.",
-            "Watch where the faster MACD line crosses the signal line.",
-            "The histogram flipping from red to green is the same event drawn as bars.",
+            "Look at the MACD chart under the price chart.",
+            "Find where the blue line crosses above the yellow line.",
+            "The bars turn from red to green at the same time.",
         ),
         why_it_matters=(
-            "It is the earliest of the common signals, which is why traders like it and why "
-            "it lies to them: it turns before the trend is confirmed."
+            "It is one of the earliest signs that a stock may rise. Early signs are handy, but "
+            "they are wrong more often."
         ),
         common_mistake=(
-            "Acting on the cross alone in a sideways market. MACD is built from averages of "
-            "averages, so it lags and chops whenever price is going nowhere."
+            "Trusting it when the price is just moving sideways. Then the lines cross back and "
+            "forth and don't mean much."
         ),
         watch_next=(
-            "Volume on the follow-through day, and whether price takes out the last swing "
-            "high. Without either, the cross tends to fade."
+            "See if the price keeps climbing over the next few days. If it doesn't, the cross "
+            "will probably fade."
         ),
     ),
     Pattern(
         slug="macd_bearish",
         name="MACD bearish crossover",
         family="momentum",
-        tension="Is the rally running out of push?",
+        tension="Is the stock running out of steam?",
         what_it_is=(
-            "The MACD line crossing below its signal line. The upward gap between the 12-day "
-            "and 26-day averages has stopped widening, which is what momentum stalling looks "
-            "like before price admits it."
+            "The blue MACD line crosses below the yellow line. The stock is slowing down, often "
+            "before its price starts to drop."
         ),
         how_to_spot=(
-            "In the MACD panel, find the point where the MACD line crosses down through the "
-            "signal line.",
-            "The histogram bars shrink toward zero and then flip negative.",
-            "Occurs many times within a longer uptrend, not just at tops.",
+            "Look at the MACD chart under the price chart.",
+            "Find where the blue line crosses below the yellow line.",
+            "The bars shrink and turn from green to red.",
         ),
         why_it_matters=(
-            "It is the standard warning to tighten up: take profits on part of a position or "
-            "trail a stop, without assuming the whole trend is over."
+            "It is a warning sign. Many traders sell part of what they own, not all of it."
         ),
         common_mistake=(
-            "Reading every bearish cross as a top. In a strong uptrend a MACD cross down "
-            "usually marks a pause, and selling everything on it is how people miss the rest "
-            "of the move."
+            "Thinking every cross down means the top. When a stock is rising strongly, it is "
+            "often just a short pause."
         ),
         watch_next=(
-            "Whether the 50-day average holds. A cross down that never breaks that line is "
-            "usually just consolidation."
+            "See if the price holds up. If it keeps falling, the warning was right."
         ),
     ),
     Pattern(
         slug="rsi_overbought",
         name="RSI overbought",
         family="momentum",
-        tension="How much of the good news is already in the price?",
+        tension="Has the stock gone up too fast?",
         what_it_is=(
-            "The 14-day Relative Strength Index climbing above 70. RSI compares the size of "
-            "recent gains with recent losses on a 0-100 scale, so above 70 means gains have "
-            "dominated the last two weeks."
+            "RSI is a number from 0 to 100 that shows how fast a stock has moved over the last "
+            "two weeks. Above 70 means it went up a lot, very fast."
         ),
         how_to_spot=(
-            "In the RSI panel, watch it cross up through the dashed 70 line.",
-            "Note the slope: a fast run from below 50 to above 70 is the strong version.",
-            "Check the price chart for a matching run - RSI spikes without a price move are rare.",
+            "Look at the RSI chart under the price chart.",
+            "Watch the line cross above the dashed line at 70.",
+            "The price chart should show a strong climb at the same time.",
         ),
         why_it_matters=(
-            "It is a measure of crowding, not of direction. Strong stocks can stay above 70 "
-            "for weeks, but the easy part of the move is usually done."
+            "The easy gains are often over. It doesn't mean the price will fall, just that the "
+            "stock is running hot."
         ),
         common_mistake=(
-            "Shorting anything that goes overbought. In a genuine uptrend RSI 70 signals "
-            "strength, and fading it repeatedly is how a winning stock is sold too early."
+            "Selling every time it happens. Strong stocks can stay above 70 for weeks and keep "
+            "climbing."
         ),
         watch_next=(
-            "Whether RSI resets toward 50 on a shallow pullback (healthy) or price breaks "
-            "down with it (the trend is failing)."
+            "See if RSI cools off toward 50 while the price holds steady (fine), or if the price "
+            "falls too (trouble)."
         ),
     ),
     Pattern(
         slug="rsi_oversold",
         name="RSI oversold",
         family="momentum",
-        tension="Is this a discount or a trap?",
+        tension="Is this a bargain or a trap?",
         what_it_is=(
-            "RSI dropping below 30 - losses have dominated the last two weeks. It says the "
-            "selling has been heavy and persistent, not that it is finished."
+            "RSI dropped below 30. That means the stock went down a lot, very fast, over the "
+            "last two weeks."
         ),
         how_to_spot=(
-            "Watch RSI cross down through the dashed 30 line in its own panel.",
-            "Compare with the price chart: a steep fall into the low 30s and below.",
-            "Note whether it is the first dip or the third one - repeated oversold readings in "
-            "a downtrend are a warning, not a gift.",
+            "Look at the RSI chart under the price chart.",
+            "Watch the line cross below the dashed line at 30.",
+            "Check if this is the first big drop or one of many. Drop after drop is a bad sign.",
         ),
         why_it_matters=(
-            "It is one of the few moments where the crowd is selling in a hurry, which is "
-            "where both the bargains and the falling knives live."
+            "People are selling in a hurry. Sometimes that makes a bargain, and sometimes the "
+            "stock just keeps falling."
         ),
         common_mistake=(
-            "Buying purely because a number went below 30. Falling stocks can stay oversold "
-            "for months; the indicator measures speed of decline, not value."
+            "Buying only because RSI is below 30. A falling stock can stay low for a long time."
         ),
         watch_next=(
-            "A higher low in price and RSI climbing back over 30. Without a turn in price, "
-            "oversold is only oversold."
+            "Wait for the price to stop falling and for RSI to climb back above 30."
         ),
     ),
     Pattern(
         slug="volume_spike",
         name="Volume spike",
         family="participation",
-        tension="Does anyone else believe this move?",
+        tension="Do lots of people agree with today's move?",
         what_it_is=(
-            "A session with more than twice the 20-day average number of shares traded. "
-            "Volume is the count of transactions, so a spike means an unusual number of "
-            "buyers and sellers agreed on a price today."
+            "Volume is how many shares were bought and sold in a day. A spike is a day with more "
+            "than twice the usual amount."
         ),
         how_to_spot=(
-            "The volume bars sit under the price chart - one bar per session.",
-            "Look for a bar roughly double the height of the recent cluster around it.",
-            "Read the direction of that same session's price candle, not the spike alone.",
+            "Look at the grey bars along the bottom of the price chart.",
+            "Find a bar about twice as tall as the ones around it.",
+            "Check whether the price went up or down that same day.",
         ),
         why_it_matters=(
-            "Big volume means real conviction. Breakouts on thin volume are the classic "
-            "failed breakout; the same breakout on heavy volume is far more likely to hold."
+            "Lots of trading means lots of people care. A price move with big volume is more "
+            "likely to last."
         ),
         common_mistake=(
-            "Ignoring it because the price move looks small. Volume is the one indicator "
-            "that is not derived from price, so it can disagree with the chart - and when it "
-            "does, it is usually right."
+            "Ignoring it because the price barely moved. Big volume can be an early clue."
         ),
         watch_next=(
-            "Whether the next session holds the price the spike created. Giving it all back "
-            "on light volume marks the spike as a one-off."
+            "See if the price holds the next day. If it slips back on quiet trading, the spike "
+            "was a one-off."
         ),
     ),
 )

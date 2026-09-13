@@ -159,6 +159,7 @@ def create_session(
     user_label: str = "anonymous",
     salary_amount: Decimal = Decimal("0"),
     finances_enabled: bool = True,
+    level: int | None = None,
 ) -> dict:
     """Create the session row. The watchlist is written separately, by set_session_tickers."""
     with get_cursor() as cur:
@@ -166,9 +167,9 @@ def create_session(
             """
             INSERT INTO game_sessions (
                 id, user_label, start_date, end_date, sim_date,
-                starting_cash, cash_balance, nessie_customer_id, nessie_account_id, salary_amount, finances_enabled
+                starting_cash, cash_balance, nessie_customer_id, nessie_account_id, salary_amount, finances_enabled, level
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -183,6 +184,7 @@ def create_session(
                 nessie_account_id,
                 salary_amount,
                 finances_enabled,
+                level,
             ),
         )
         return cur.fetchone()

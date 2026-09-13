@@ -23,13 +23,13 @@
                     <button id="tutorial-btn" type="button"
                         class="inline-flex items-center gap-2 rounded-full border border-line-strong px-3 py-1 text-sm text-muted transition hover:border-brand hover:text-white">
                         <span class="flex h-5 w-5 items-center justify-center rounded-full border border-line-strong text-xs">?</span>
-                        How this works
+                        <span id="tutorial-label">How this works</span>
                     </button>
                 </div>
                 <h1 class="mt-3 text-5xl font-bold tracking-tight">
                     <span id="sim-date">&mdash;</span>
                 </h1>
-                <p id="mode-label" class="mt-2 text-sm text-dim">Replaying real market history</p>
+                <p id="mode-label" class="mt-2 text-sm text-dim">Using real past prices</p>
             </div>
 
             <div class="grid grid-cols-2 gap-4 sm:grid-cols-4 lg:gap-5">
@@ -38,15 +38,15 @@
                     <div id="cash" class="mt-1 text-3xl font-semibold tabular-nums">&mdash;</div>
                 </div>
                 <div class="min-w-40 rounded-2xl border border-line bg-raised px-6 py-4">
-                    <div class="text-xs uppercase tracking-widest text-dim">Positions</div>
+                    <div class="text-xs uppercase tracking-widest text-dim">Stocks owned</div>
                     <div id="positions" class="mt-1 text-3xl font-semibold tabular-nums">0</div>
                 </div>
                 <div class="min-w-40 rounded-2xl border border-line bg-raised px-6 py-4">
-                    <div class="text-xs uppercase tracking-widest text-dim">Net worth</div>
+                    <div class="text-xs uppercase tracking-widest text-dim">Total value</div>
                     <div id="net-worth" class="mt-1 text-3xl font-semibold tabular-nums">&mdash;</div>
                 </div>
                 <div class="min-w-40 rounded-2xl border border-line bg-raised px-6 py-4">
-                    <div class="text-xs uppercase tracking-widest text-dim">Return</div>
+                    <div class="text-xs uppercase tracking-widest text-dim">Gain / loss</div>
                     <div id="return-pct" class="mt-1 text-3xl font-semibold tabular-nums">&mdash;</div>
                 </div>
             </div>
@@ -55,6 +55,39 @@
         <!-- Watchlist: every symbol in the basket, with its position size inline. Clicking
              one moves the chart, trade panel and AI read onto it. -->
         <div id="watchlist" class="mb-6 flex flex-wrap gap-3"></div>
+
+        <div id="level-panel"
+            class="mb-6 hidden rounded-3xl border border-brand/40 bg-gradient-to-br from-brand/15 via-brand/5 to-transparent p-6">
+            <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
+                <div>
+                    <p id="level-kicker" class="text-xs font-semibold uppercase tracking-widest text-brand-soft"></p>
+                    <h2 id="level-title" class="mt-1 text-2xl font-bold"></h2>
+                    <p class="mt-3 text-sm"><span class="font-semibold text-up">Buy</span> <span id="level-buy" class="text-muted"></span></p>
+                    <p class="mt-1 text-sm"><span class="font-semibold text-down">Sell</span> <span id="level-sell" class="text-muted"></span></p>
+                </div>
+                <div>
+                    <p class="mb-2 text-xs uppercase tracking-widest text-dim">Stars</p>
+                    <ul id="level-goals" class="space-y-2 text-sm"></ul>
+                </div>
+                <div>
+                    <div class="flex justify-between text-xs text-dim">
+                        <span class="uppercase tracking-widest">Progress</span>
+                        <span id="level-days" class="tabular-nums"></span>
+                    </div>
+                    <div class="mt-2 h-2 overflow-hidden rounded-full bg-line">
+                        <div id="level-bar" class="h-full rounded-full bg-brand transition-all duration-300"></div>
+                    </div>
+                    <p class="mt-4 text-xs uppercase tracking-widest text-dim">Last trade</p>
+                    <div id="level-last" class="mt-1 text-sm text-muted"></div>
+                    <div class="mt-4 flex flex-wrap gap-2">
+                        <button id="level-brief-btn" type="button"
+                            class="rounded-full border border-line-strong px-4 py-1.5 text-sm text-muted transition hover:border-brand hover:text-white">Briefing</button>
+                        <a href="/#levels"
+                            class="rounded-full border border-line-strong px-4 py-1.5 text-sm text-muted transition hover:border-muted hover:text-white">All levels</a>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <!-- Keep the utility panels close to the charts instead of marooning them in a
              skinny far-right rail. The sidebar gets two columns on wide screens so its
@@ -69,7 +102,7 @@
                             <span id="focus-name" class="ml-2 font-normal text-dim"></span>
                         </h2>
                         <div class="flex items-baseline gap-3">
-                            <span class="text-sm text-dim">Last close</span>
+                            <span class="text-sm text-dim">Latest price</span>
                             <span id="current-price" class="text-2xl font-semibold tabular-nums">&mdash;</span>
                             <span id="current-change" class="text-lg font-semibold tabular-nums">&mdash;</span>
                         </div>
@@ -77,12 +110,12 @@
                     <div class="h-[560px]"><canvas id="price-chart"></canvas></div>
                 </div>
 
-                <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                    <div class="rounded-3xl border border-line bg-surface p-6">
+                <div id="indicator-row" class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                    <div data-panel="rsi" class="rounded-3xl border border-line bg-surface p-6">
                         <h2 class="mb-3 text-lg font-semibold">RSI (14)</h2>
                         <div class="h-[300px]"><canvas id="rsi-chart"></canvas></div>
                     </div>
-                    <div class="rounded-3xl border border-line bg-surface p-6">
+                    <div data-panel="macd" class="rounded-3xl border border-line bg-surface p-6">
                         <h2 class="mb-3 text-lg font-semibold">MACD (12, 26, 9)</h2>
                         <div class="h-[300px]"><canvas id="macd-chart"></canvas></div>
                     </div>
@@ -90,10 +123,10 @@
 
                 <!-- The two portfolio views: what the basket did relative to itself, and
                      what the account is actually worth. -->
-                <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                    <div class="rounded-3xl border border-line bg-surface p-6">
+                <div id="portfolio-row" class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                    <div data-panel="basket" class="rounded-3xl border border-line bg-surface p-6">
                         <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-                            <h2 class="text-lg font-semibold">Basket, rebased to 100</h2>
+                            <h2 class="text-lg font-semibold">Your stocks side by side (all start at 100)</h2>
                             <span id="basket-window" class="text-xs text-dim"></span>
                         </div>
                         <div class="h-[300px]"><canvas id="basket-chart"></canvas></div>
@@ -101,13 +134,13 @@
                     </div>
                     <div class="rounded-3xl border border-line bg-surface p-6">
                         <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-                            <h2 class="text-lg font-semibold">Account equity</h2>
+                            <h2 class="text-lg font-semibold">Your account value</h2>
                             <span id="equity-note" class="text-xs text-dim"></span>
                         </div>
                         <div class="h-[300px]"><canvas id="equity-chart"></canvas></div>
                         <p class="mt-3 text-xs leading-relaxed text-dim">
-                            Cash plus open positions, day by day. This is the line that matters:
-                            a basket can be full of winners while the account is flat.
+                            Your cash plus what your stocks are worth, day by day. This is the
+                            number that matters most.
                         </p>
                     </div>
                 </div>
@@ -131,7 +164,7 @@
                         <h2 class="mb-3 text-lg font-semibold">Learning options</h2>
                         <label id="teacher-row" class="flex cursor-pointer items-start gap-3">
                             <input type="checkbox" id="teacher-mode" checked class="mt-1 h-5 w-5 shrink-0 accent-accent">
-                            <span><span class="block font-semibold">Teacher mode</span><span class="block text-sm text-dim">Pause when a new pattern appears and explain it before continuing.</span></span>
+                            <span><span class="block font-semibold">Teacher mode</span><span class="block text-sm text-dim">Pause and explain each new pattern when it shows up.</span></span>
                         </label>
                     </div>
                 </div>
@@ -149,17 +182,17 @@
                     <div class="mb-4 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">Trade</h2>
                         <span id="trade-position" class="rounded-full border border-line px-3 py-1 text-xs text-muted">
-                            no position
+                            none owned
                         </span>
                     </div>
                     <label class="mb-3 block text-xs uppercase tracking-wide text-dim"
-                        for="trade-ticker">Symbol</label>
+                        for="trade-ticker">Stock</label>
                     <select id="trade-ticker"
                         class="mb-4 w-full rounded-xl border border-line-strong bg-ink px-4 py-3 text-white outline-none focus:border-brand"></select>
                     <div class="mb-4 flex items-center gap-3">
                         <input type="number" id="share-qty" value="10" min="0.01" step="1"
                             class="w-32 rounded-xl border border-line-strong bg-ink px-4 py-3 tabular-nums text-white outline-none focus:border-brand">
-                        <span class="text-muted">shares @</span>
+                        <span class="text-muted">shares at</span>
                         <span id="trade-price" class="font-semibold tabular-nums">&mdash;</span>
                     </div>
                     <div class="grid grid-cols-2 gap-3">
@@ -179,15 +212,15 @@
                     <p id="trade-error"
                         class="mt-3 hidden rounded-xl border border-down/40 bg-down/10 p-3 text-sm text-down"></p>
                     <p id="trade-summary" class="mt-4 border-t border-line pt-4 text-sm text-muted">
-                        You do not hold this symbol yet.
+                        You don't own this stock yet.
                     </p>
                 </div>
 
                 <div class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-4 flex items-center justify-between gap-3">
                             <div>
-                                <h2 class="text-lg font-semibold">Holdings</h2>
-                                <p class="mt-1 text-xs text-dim">Dividend payments depend on shares held before each ex-date.</p>
+                                <h2 class="text-lg font-semibold">Stocks you own</h2>
+                                <p class="mt-1 text-xs text-dim">You only get a dividend if you own the stock before its dividend date.</p>
                             </div>
                         <button id="sell-all-btn"
                             class="rounded-full border border-line px-3 py-1.5 text-xs text-muted transition hover:border-down/60 hover:text-down">
@@ -197,51 +230,49 @@
                     <!-- A list, not a table: five numeric columns do not fit the sidebar at
                          the width this column actually gets, and they were colliding. -->
                     <div id="holdings-body" class="space-y-2">
-                        <p class="py-2 text-sm text-dim">No open positions.</p>
+                        <p class="py-2 text-sm text-dim">You don't own any stocks yet.</p>
                     </div>
                     <p class="mt-4 border-t border-line pt-4 text-xs leading-relaxed text-dim">
-                        Buy or sell straight from a holding. Trades fill at the close shown on the
-                        chart for the day you are standing on.
+                        Buy or sell right from here. You pay the price at the end of the current day.
                     </p>
                 </div>
 
                 <!-- The one card that has to stand out, in the mock's teal. -->
-                <div id="sim-panel"
+                <div id="sim-panel" data-panel="sim"
                     class="rounded-3xl border border-accent/30 bg-gradient-to-br from-accent/25 via-accent/10 to-transparent p-6">
                     <div class="mb-4 flex items-center justify-between gap-3">
-                        <h2 class="text-lg font-semibold">Simulated future</h2>
+                        <h2 class="text-lg font-semibold">Made-up future prices</h2>
                         <span id="sim-state"
-                            class="rounded-full border border-line px-3 py-1 text-xs text-muted">real data only</span>
+                            class="rounded-full border border-line px-3 py-1 text-xs text-muted">real prices only</span>
                     </div>
 
                     <div id="sim-off" class="space-y-4">
                         <p class="text-sm leading-relaxed text-muted">
-                            Fork every symbol in the basket wherever the real data ends and keep
-                            trading into generated futures. They are private to this session, so
-                            the shared history stays real.
+                            When the real price history runs out, keep playing with made-up future
+                            prices. Only your game uses them.
                         </p>
                         <button id="sim-fork-btn"
                             class="w-full rounded-xl bg-accent py-3 font-semibold text-ink transition hover:bg-accent-soft">
-                            Generate a future
+                            Make up future prices
                         </button>
                     </div>
 
                     <div id="sim-on" class="hidden space-y-4">
                         <dl class="grid grid-cols-2 gap-3 text-sm">
                             <div>
-                                <dt class="text-xs uppercase tracking-wide text-dim">Forks at</dt>
+                                <dt class="text-xs uppercase tracking-wide text-dim">Real prices end</dt>
                                 <dd id="sim-fork" class="tabular-nums">&mdash;</dd>
                             </div>
                             <div>
-                                <dt class="text-xs uppercase tracking-wide text-dim">Generated days</dt>
+                                <dt class="text-xs uppercase tracking-wide text-dim">Made-up days</dt>
                                 <dd id="sim-bars" class="tabular-nums">&mdash;</dd>
                             </div>
                             <div>
-                                <dt class="text-xs uppercase tracking-wide text-dim">Annual drift</dt>
+                                <dt class="text-xs uppercase tracking-wide text-dim">Yearly trend</dt>
                                 <dd id="sim-drift" class="tabular-nums">&mdash;</dd>
                             </div>
                             <div>
-                                <dt class="text-xs uppercase tracking-wide text-dim">Annual vol</dt>
+                                <dt class="text-xs uppercase tracking-wide text-dim">How bumpy (yearly)</dt>
                                 <dd id="sim-vol" class="tabular-nums">&mdash;</dd>
                             </div>
                         </dl>
@@ -253,40 +284,40 @@
                         </button>
 
                         <form id="shock-form" class="space-y-3 border-t border-line/60 pt-4">
-                            <p class="text-xs uppercase tracking-wide text-dim">Push a market event</p>
-                            <input id="shock-headline" type="text" placeholder="Headline the market reacts to"
+                            <p class="text-xs uppercase tracking-wide text-dim">Make up a news story</p>
+                            <input id="shock-headline" type="text" placeholder="Write a headline"
                                 class="w-full rounded-xl border border-line-strong bg-ink px-4 py-2.5 text-sm text-white outline-none placeholder:text-dim focus:border-brand">
                             <div class="grid grid-cols-2 gap-3">
                                 <label class="text-xs text-muted">
-                                    Reaches
+                                    Affects
                                     <select id="shock-scope"
                                         class="mt-1 w-full rounded-xl border border-line-strong bg-ink px-3 py-2.5 text-sm text-white outline-none focus:border-brand">
-                                        <option value="ticker">This symbol only</option>
-                                        <option value="sector">Every holding in its sector</option>
-                                        <option value="market">The whole basket</option>
+                                        <option value="ticker">Just this stock</option>
+                                        <option value="sector">Your stocks in the same industry</option>
+                                        <option value="market">All your stocks</option>
                                     </select>
                                 </label>
                                 <label class="text-xs text-muted">
-                                    Headline about
+                                    Story is about
                                     <span id="shock-ticker"
                                         class="mt-1 block rounded-xl border border-line px-3 py-2.5 font-mono text-sm">&mdash;</span>
                                 </label>
                             </div>
                             <div class="grid grid-cols-2 gap-3">
                                 <label class="text-xs text-muted">
-                                    Sentiment
+                                    Bad (-1) to good (1)
                                     <input id="shock-sentiment" type="number" min="-1" max="1" step="0.05" value="0.6"
                                         class="mt-1 w-full rounded-xl border border-line-strong bg-ink px-4 py-2.5 text-sm tabular-nums text-white outline-none focus:border-brand">
                                 </label>
                                 <label class="text-xs text-muted">
-                                    Magnitude
+                                    Small (0) to huge (1)
                                     <input id="shock-magnitude" type="number" min="0" max="1" step="0.05" value="0.5"
                                         class="mt-1 w-full rounded-xl border border-line-strong bg-ink px-4 py-2.5 text-sm tabular-nums text-white outline-none focus:border-brand">
                                 </label>
                             </div>
                             <button id="shock-btn"
                                 class="w-full rounded-xl bg-brand py-2.5 text-sm font-semibold transition hover:bg-brand-soft">
-                                Push event into the future
+                                Add this story to the future
                             </button>
                             <p id="shock-error" class="hidden text-xs text-down"></p>
                         </form>
@@ -295,25 +326,7 @@
                         class="mt-3 hidden rounded-xl border border-down/40 bg-down/10 p-3 text-sm text-down"></p>
                 </div>
 
-                <div id="news-panel" class="rounded-3xl border border-line bg-surface p-6">
-                    <div class="mb-1 flex items-center justify-between gap-3">
-                        <h2 class="text-lg font-semibold">News</h2>
-                        <span id="news-count"
-                            class="rounded-full border border-line px-3 py-1 text-xs text-muted">&mdash;</span>
-                    </div>
-                    <p class="mb-4 text-xs text-dim">
-                        Headlines about the stocks you picked. Most of it will not move the price.
-                    </p>
-                    <div id="news-feed" class="max-h-[28rem] space-y-2 overflow-y-auto text-sm">
-                        <p class="text-xs text-dim">Headlines show up as the clock moves.</p>
-                    </div>
-                    <p class="mt-4 border-t border-line pt-4 text-[11px] leading-relaxed text-dim">
-                        Practice newswire: stories about price moves come from the real chart, and the
-                        rest is made up.
-                    </p>
-                </div>
-
-                <div id="bank-panel" class="rounded-3xl border border-line bg-surface p-6">
+                <div id="bank-panel" data-panel="bank" class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-3 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">Your bank</h2>
                         <span id="bank-source"
@@ -337,7 +350,7 @@
 
                 <!-- The bank side of the account. Trading is not the only thing taking
                      money out, and this is where that becomes obvious. -->
-                <div id="bills-panel" class="rounded-3xl border border-line bg-surface p-6">
+                <div id="bills-panel" data-panel="bank" class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-1 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">Bills &amp; dividends</h2>
                         <span id="bills-runway"
@@ -347,11 +360,11 @@
                     <div id="overdrawn-banner"
                         class="mb-4 hidden rounded-xl border border-down/50 bg-down/10 p-3 text-sm text-down">
                         <span class="font-semibold">You are overdrawn.</span>
-                        Bills came out while your money was tied up in stock. Sell something to
-                        get back above zero - at whatever price the market is offering today.
+                        Bills came out while your money was in stocks. Sell something to get back
+                        above zero.
                     </div>
                     <div id="bills-list" class="space-y-2 text-sm">
-                        <p class="text-xs text-dim">No standing orders on this account.</p>
+                        <p class="text-xs text-dim">No bills on this account.</p>
                     </div>
                     <p id="bills-paid" class="mt-4 border-t border-line pt-4 text-xs text-dim"></p>
                     <div class="mt-4 rounded-2xl border border-up/30 bg-up/5 p-4">
@@ -360,16 +373,15 @@
                             <span id="dividends-paid" class="font-semibold tabular-nums text-up">$0.00</span>
                         </div>
                         <p class="mt-2 text-xs leading-relaxed text-muted">
-                            A dividend is cash a company distributes to shareholders. You receive it
-                            only when you own shares before the ex-dividend date; it is investment
-                            income, not a paycheck. The payment goes straight into cash and counts
-                            toward your stock return.
+                            A dividend is cash a company pays to people who own its stock. You only
+                            get it if you own shares before the dividend date. It goes straight into
+                            your cash and counts toward your stock return.
                         </p>
                         <div id="dividend-history" class="mt-3 space-y-2 text-xs"></div>
                     </div>
                 </div>
 
-                <div class="rounded-3xl border border-line bg-surface p-6">
+                <div data-panel="ai" class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-4 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">AI coach</h2>
                         <button id="predict-btn"
@@ -386,14 +398,14 @@
                     </div>
                 </div>
 
-                <div class="rounded-3xl border border-line bg-surface p-6">
+                <div data-panel="patterns" class="rounded-3xl border border-line bg-surface p-6">
                     <div class="mb-3 flex items-center justify-between gap-3">
                         <h2 class="text-lg font-semibold">Pattern school</h2>
                         <span id="pattern-progress"
                             class="rounded-full border border-line px-3 py-1 text-xs text-muted">0 learned</span>
                     </div>
                     <p class="mb-4 text-xs text-dim">
-                        Each pattern is taught the first time it turns up in one of your own stocks.
+                        You learn each pattern the first time it shows up in one of your stocks.
                     </p>
                     <div id="pattern-list" class="space-y-2 text-sm">
                         <p class="text-xs text-dim">Advance the clock until a pattern appears.</p>
@@ -408,13 +420,20 @@
          empty most ticks. The tab rides the right edge and carries a count of what has
          not been read yet; the panel slides over the cards rather than narrowing the
          charts, and Escape, the close button or a click outside puts it away. -->
-    <button id="signals-toggle" type="button" aria-controls="signal-drawer" aria-expanded="false"
-        title="Signals seen"
-        class="fixed right-0 top-1/2 z-40 flex -translate-y-1/2 flex-col items-center gap-2 rounded-l-lg border border-r-0 border-line-strong bg-surface/95 py-4 pl-1.5 pr-1 text-center shadow-xl backdrop-blur transition hover:border-muted">
-        <span class="signals-tab text-[11px] font-semibold uppercase tracking-widest text-muted">Signals</span>
-        <span id="signals-count"
-            class="hidden rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none">0</span>
-    </button>
+    <div id="edge-tabs" class="fixed right-0 top-1/2 z-40 flex -translate-y-1/2 flex-col items-end gap-3">
+        <button id="news-toggle" data-panel="news" type="button" aria-controls="news-overlay" title="The Daily Ledger"
+            class="flex flex-col items-center gap-2 rounded-l-lg border border-r-0 border-line-strong bg-surface/95 py-4 pl-1.5 pr-1 text-center shadow-xl backdrop-blur transition hover:border-muted">
+            <span class="signals-tab text-[11px] font-semibold uppercase tracking-widest text-muted">News</span>
+            <span id="news-count" class="hidden">0</span>
+        </button>
+        <button id="signals-toggle" data-panel="signals" type="button" aria-controls="signal-drawer" aria-expanded="false"
+            title="Signals seen"
+            class="flex flex-col items-center gap-2 rounded-l-lg border border-r-0 border-line-strong bg-surface/95 py-4 pl-1.5 pr-1 text-center shadow-xl backdrop-blur transition hover:border-muted">
+            <span class="signals-tab text-[11px] font-semibold uppercase tracking-widest text-muted">Signals</span>
+            <span id="signals-count"
+                class="hidden rounded-full px-1.5 py-0.5 text-[11px] font-semibold leading-none">0</span>
+        </button>
+    </div>
 
     <div id="signal-backdrop" class="fixed inset-0 z-40 hidden bg-ink/70 backdrop-blur-sm"></div>
 
@@ -424,7 +443,7 @@
             <div>
                 <h2 id="signal-drawer-title" class="text-lg font-semibold">Signals seen</h2>
                 <p id="signals-summary" class="mt-1 text-xs leading-relaxed text-dim">
-                    Every pattern the clock has printed on your own symbols.
+                    Every pattern that has shown up on your stocks.
                 </p>
             </div>
             <button id="signals-close" type="button" aria-label="Close signals"
@@ -438,18 +457,127 @@
         </p>
     </aside>
 
-    <div id="summary-overlay" class="fixed inset-0 z-50 hidden items-center justify-center bg-ink/90 p-6">
-        <div class="w-full max-w-lg rounded-3xl border border-line bg-surface p-10 text-center">
-            <h2 class="mb-3 text-3xl font-bold">Run complete</h2>
+    <div id="summary-overlay" class="fixed inset-0 z-50 hidden items-center justify-center overflow-y-auto bg-ink/90 p-6">
+        <div id="summary-card" class="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-3xl border border-line bg-surface p-10 text-center">
+            <h2 id="summary-title" class="mb-3 text-3xl font-bold">Run complete</h2>
             <p id="summary-range" class="mb-8 text-muted"></p>
+            <div id="summary-stars" class="mb-4 hidden text-5xl tracking-widest text-warn"></div>
             <div id="summary-return" class="mb-3 text-6xl font-bold tabular-nums"></div>
             <p class="mb-8 text-muted">
-                Net worth <span id="summary-net"></span> from <span id="summary-start"></span> starting cash
+                You ended with <span id="summary-net"></span> after starting with <span id="summary-start"></span>
             </p>
-            <a href="/"
-                class="inline-block rounded-full bg-brand px-8 py-3 font-semibold transition hover:bg-brand-soft">
-                Trade another stretch
-            </a>
+            <div id="summary-level" class="mb-8 hidden text-left">
+                <p id="summary-pass" class="mb-5 rounded-2xl border p-4 text-center text-sm"></p>
+                <ul id="summary-goals" class="mb-6 space-y-2 text-sm"></ul>
+                <p class="mb-2 text-xs uppercase tracking-widest text-dim">Your trades, graded</p>
+                <div id="summary-trades" class="max-h-56 space-y-2 overflow-y-auto text-sm"></div>
+            </div>
+            <div class="flex flex-wrap justify-center gap-3">
+                <button id="summary-replay" type="button"
+                    class="hidden rounded-full border border-line-strong px-6 py-3 font-semibold text-muted transition hover:border-muted hover:text-white">
+                    Replay level
+                </button>
+                <button id="summary-next" type="button"
+                    class="hidden rounded-full bg-brand px-8 py-3 font-semibold transition hover:bg-brand-soft">
+                    Next level
+                </button>
+                <a id="summary-link" href="/"
+                    class="inline-block rounded-full bg-brand px-8 py-3 font-semibold transition hover:bg-brand-soft">
+                    Trade another stretch
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div id="news-overlay" role="dialog" aria-modal="true" aria-labelledby="news-masthead"
+        class="fixed inset-0 z-50 hidden items-start justify-center overflow-y-auto bg-ink/90 p-4 backdrop-blur-sm sm:p-8">
+        <div class="w-full max-w-5xl rounded-3xl border border-line bg-surface shadow-2xl">
+            <header class="border-b border-line px-6 pb-5 pt-6 sm:px-8">
+                <div class="flex items-center justify-between gap-3">
+                    <span class="rounded-full border border-accent/50 bg-accent/10 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-accent-soft">Clock paused</span>
+                    <button id="news-close" type="button" aria-label="Close the paper"
+                        class="rounded-full border border-line px-3 py-1.5 text-sm text-muted transition hover:border-muted hover:text-white">&times;</button>
+                </div>
+                <h2 id="news-masthead" class="mt-3 text-center font-serif text-4xl font-bold tracking-tight sm:text-5xl">The Daily Ledger</h2>
+                <p id="news-dateline" class="mt-2 text-center text-sm uppercase tracking-widest text-muted"></p>
+                <div class="mt-5 flex flex-wrap items-center justify-center gap-3">
+                    <button id="news-prev" type="button"
+                        class="rounded-full border border-line-strong px-4 py-2 text-sm text-muted transition hover:border-muted hover:text-white disabled:opacity-30">&larr; Earlier</button>
+                    <select id="news-date"
+                        class="rounded-xl border border-line-strong bg-ink px-3 py-2 text-sm text-white outline-none focus:border-brand"></select>
+                    <button id="news-next" type="button"
+                        class="rounded-full border border-line-strong px-4 py-2 text-sm text-muted transition hover:border-muted hover:text-white disabled:opacity-30">Later &rarr;</button>
+                </div>
+            </header>
+            <p id="news-error" class="m-8 hidden rounded-xl border border-down/40 bg-down/10 p-3 text-sm text-down"></p>
+            <div id="news-body" class="grid grid-cols-1 gap-8 px-6 py-6 sm:px-8 lg:grid-cols-3">
+                <div class="lg:col-span-2">
+                    <article id="news-lead" class="border-b border-line pb-6"></article>
+                    <div id="news-stories" class="divide-y divide-line"></div>
+                </div>
+                <aside class="space-y-6">
+                    <div class="rounded-2xl border border-line bg-ink-soft p-5">
+                        <h3 class="text-xs font-semibold uppercase tracking-widest text-dim">How your stocks ended the day</h3>
+                        <div id="news-bell" class="mt-3 space-y-3 text-sm"></div>
+                    </div>
+                    <div class="rounded-2xl border border-warn/30 bg-warn/5 p-5 text-sm leading-relaxed text-muted">
+                        <h3 class="mb-2 text-xs font-semibold uppercase tracking-widest text-warn">Reading the paper</h3>
+                        Most news doesn't change a stock's price. For each story, ask: did something
+                        real happen to the company or its price, or is this just filler? Nothing is
+                        labeled for you.
+                    </div>
+                </aside>
+            </div>
+            <footer class="flex flex-wrap items-center justify-between gap-4 border-t border-line px-6 py-5 sm:px-8">
+                <p class="max-w-md text-[11px] leading-relaxed text-dim">
+                    Practice paper: stories about price jumps, trading volume, yearly highs and lows,
+                    and winning or losing streaks come from real prices. Everything else is made up.
+                </p>
+                <div class="flex flex-wrap gap-3">
+                    <button id="news-done" type="button"
+                        class="rounded-full border border-line-strong px-6 py-2.5 text-sm font-semibold text-muted transition hover:border-muted hover:text-white">
+                        Back to the chart
+                    </button>
+                    <button id="news-resume" type="button"
+                        class="hidden rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-ink transition hover:bg-accent-soft">
+                        Resume the clock
+                    </button>
+                </div>
+            </footer>
+        </div>
+    </div>
+
+    <div id="brief-overlay" class="fixed inset-0 z-[58] hidden items-center justify-center bg-ink/90 p-6 backdrop-blur-sm">
+        <div class="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-brand/50 bg-surface p-8 shadow-2xl">
+            <p id="brief-kicker" class="text-xs font-semibold uppercase tracking-widest text-brand-soft"></p>
+            <h2 id="brief-title" class="mt-2 text-4xl font-bold tracking-tight"></h2>
+            <p id="brief-tagline" class="mt-2 text-muted"></p>
+            <div id="brief-tools" class="mt-4 flex flex-wrap gap-2"></div>
+            <div id="brief-text" class="mt-6 space-y-3 text-sm leading-relaxed text-muted"></div>
+            <div class="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div class="rounded-2xl border border-up/40 bg-up/10 p-4">
+                    <p class="text-xs font-semibold uppercase tracking-widest text-up">Buy rule</p>
+                    <p id="brief-buy" class="mt-1 text-sm text-white"></p>
+                </div>
+                <div class="rounded-2xl border border-down/40 bg-down/10 p-4">
+                    <p class="text-xs font-semibold uppercase tracking-widest text-down">Sell rule</p>
+                    <p id="brief-sell" class="mt-1 text-sm text-white"></p>
+                </div>
+            </div>
+            <div class="mt-6">
+                <p class="mb-2 text-xs uppercase tracking-widest text-dim">Earn your stars</p>
+                <ul id="brief-goals" class="space-y-2 text-sm"></ul>
+            </div>
+            <p class="mt-6 text-xs leading-relaxed text-dim">
+                You start with $10,000 and no bills. Teacher mode is on, so the game pauses to
+                explain each new pattern when it shows up.
+            </p>
+            <div class="mt-8 flex flex-wrap gap-3">
+                <button id="brief-start" type="button"
+                    class="rounded-full bg-brand px-8 py-3 text-lg font-semibold transition hover:bg-brand-soft">Start the clock</button>
+                <button id="brief-look" type="button"
+                    class="rounded-full border border-line-strong px-6 py-3 font-semibold text-muted transition hover:border-muted hover:text-white">Look around first</button>
+            </div>
         </div>
     </div>
 
@@ -512,6 +640,9 @@
             </button>
         </div>
     </div>
+
+    <div id="stock-tip" role="tooltip"
+        class="pointer-events-none fixed z-[75] hidden w-80 max-w-[calc(100vw-2rem)] rounded-2xl border border-line-strong bg-surface/95 p-4 text-left shadow-2xl backdrop-blur"></div>
 
     <script src="{{ url_for('static', filename='js/chart-setup.js') }}"></script>
     <script src="{{ url_for('static', filename='js/game.js') }}"></script>
