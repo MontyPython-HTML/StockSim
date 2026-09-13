@@ -135,9 +135,10 @@ html {
     }
 }
 
-/* The newswire strip. The track holds the day's headlines twice over so the loop can wrap
-   without a visible jump, and it stops on hover - and while a story is open in the reader -
-   because a headline nobody can click is just decoration. */
+/* The newswire strip. The track holds the day's headlines once, repeated, so the loop can
+   wrap without a visible jump. The drift itself comes from game.js rather than a keyframe
+   animation: an animation is a function of wall-clock time against a track of a fixed
+   length, so every headline that arrives re-times the strip and the scroll jumps. */
 @layer components {
     .newswire-viewport {
         overflow: hidden;
@@ -150,23 +151,16 @@ html {
         gap: 0.75rem;
         padding: 0.25rem 0;
         white-space: nowrap;
-        animation: newswire-drift var(--newswire-duration, 90s) linear infinite;
         will-change: transform;
     }
 
-    .newswire-track:hover,
-    .newswire-viewport.is-reading .newswire-track {
-        animation-play-state: paused;
-    }
-
-    @keyframes newswire-drift {
-        from {
-            transform: translateX(0);
-        }
-
-        to {
-            transform: translateX(-50%);
-        }
+    /* One pass through the headlines. Each copy is laid out exactly like the chips inside it,
+       so a copy butting up against the next is indistinguishable from one long list. */
+    .newswire-run {
+        display: inline-flex;
+        flex: none;
+        gap: 0.75rem;
+        white-space: nowrap;
     }
 
     /* Cards the player can fold away. The header row stays, everything under it hides, and
@@ -211,9 +205,9 @@ html {
         }
     }
 
+    /* The newswire is left out of this on purpose: its motion is driven from game.js, which
+       reads the same preference and simply never starts the drift. */
     @media (prefers-reduced-motion: reduce) {
-
-        .newswire-track,
         .signals-attention .signals-badge-dot {
             animation: none;
         }

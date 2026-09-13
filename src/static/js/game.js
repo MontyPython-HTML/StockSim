@@ -317,47 +317,188 @@ let newsSignature = null;
 let newsStories = [];
 let readerWasRunning = false;
 
-// Seconds one copy of the strip takes to drift past. Per story, not for the whole strip, so
-// the headlines move at the same readable speed whether the run is a week or a decade old.
+// Seconds of drift per headline. Per story, not for the whole strip, so the headlines move
+// at the same readable pace whether the run is a week old or a decade.
 const NEWSWIRE_SECONDS_PER_STORY = 6;
 const NEWSWIRE_MIN_SECONDS = 45;
+// A frame that arrives long after the last one - a backgrounded tab, a stalled main thread -
+// would otherwise advance the strip by everything it missed in a single leap.
+const NEWSWIRE_MAX_FRAME_SECONDS = 0.1;
+
+let newsOffset = 0;      // how far the strip has drifted, in px
+let newsPitch = 0;       // one full pass of the headlines plus the gap that follows it, in px
+let newsSpeed = 0;       // px per second
+let newsRaf = null;
+let newsFrameTime = 0;
+let newsHovered = false;
+let newsIds = [];        // old -> new, exactly what the DOM is holding
+
+const newsTrack = () => el('news-track');
+const newsRuns = () => [...newsTrack().children]
+    .filter((node) => node.classList.contains('newswire-run'));
+const newsReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function newsGap() {
+    const styles = getComputedStyle(newsTrack());
+    const gap = parseFloat(styles.columnGap || styles.gap);
+    return Number.isFinite(gap) ? gap : 0;
+}
+
+const newsRunWidth = () => newsRuns()[0]?.getBoundingClientRect().width || 0;
+
+// Held under the pointer, or while a story is open, the strip stops: a headline nobody can
+// click is just decoration.
+const newsPaused = () => newsHovered || readerOpen() || newsReducedMotion();
+
+// The drift is driven here rather than by a CSS animation. A keyframe animation is a function
+// of wall-clock time against a track of a fixed length, so the moment a headline arrives the
+// strip changes length, the timing is re-solved and whatever is on screen snaps sideways -
+// the jump that reads as "the newswire refreshed". The scroll offset is state this script
+// owns instead, so a new headline is written past the right edge while everything already on
+// screen keeps its place.
+function newsDrift(now) {
+    newsRaf = requestAnimationFrame(newsDrift);
+    const elapsed = newsFrameTime
+        ? Math.min((now - newsFrameTime) / 1000, NEWSWIRE_MAX_FRAME_SECONDS)
+        : 0;
+    newsFrameTime = now;
+    if (!newsSpeed || !newsPitch || newsPaused()) return;
+    newsOffset = (newsOffset + newsSpeed * elapsed) % newsPitch;
+    newsTrack().style.transform = `translate3d(${-newsOffset}px, 0, 0)`;
+}
+
+function startNewsDrift() {
+    if (newsRaf !== null || !newsPitch || newsReducedMotion()) return;
+    newsFrameTime = 0;
+    newsRaf = requestAnimationFrame(newsDrift);
+}
+
+// Everything downstream of a change to the strip: how far one full pass travels, and how fast
+// that pass should run to keep the pace at a readable number of seconds per headline.
+function measureNews() {
+    newsPitch = newsRunWidth() + newsGap();
+    newsSpeed = newsPitch
+        ? newsPitch / Math.max(NEWSWIRE_MIN_SECONDS, newsIds.length * NEWSWIRE_SECONDS_PER_STORY)
+        : 0;
+    if (newsPitch) newsOffset = ((newsOffset % newsPitch) + newsPitch) % newsPitch;
+    newsTrack().style.transform = `translate3d(${-newsOffset}px, 0, 0)`;
+    startNewsDrift();
+}
 
 const READER_NOTE = 'This is a practice newswire. Headlines about big moves and unusual '
     + 'volume are written from the real chart, the rest is invented company noise, and nothing '
     + 'marks which is which - telling them apart before you trade on one is the exercise. Ask '
     + 'yourself what this would have to change about the business for the price to care.';
 
-function storyChip(story, duplicate = false) {
-    // The second pass through the list is decoration: it is what makes the drift look endless
-    // instead of snapping back to the start, so it is hidden from the keyboard and the AT.
-    return `<button type="button" data-story="${story.id}"
-        class="news-chip flex shrink-0 items-center gap-3 rounded-2xl border border-line bg-ink-soft px-4 py-2 text-left transition hover:border-brand hover:bg-brand/10"
-        ${duplicate ? 'tabindex="-1" aria-hidden="true"' : ''}>
+function storyChip(story, decorative = false) {
+    // The repeat passes through the list are decoration: they are what makes the drift look
+    // endless instead of snapping back to the start, so they are hidden from the keyboard and
+    // the AT.
+    const holder = document.createElement('div');
+    holder.innerHTML = `<button type="button" data-story="${esc(story.id)}"
+        class="news-chip flex shrink-0 items-center gap-3 rounded-2xl border border-line bg-ink-soft px-4 py-2 text-left transition hover:border-brand hover:bg-brand/10">
         <span class="font-mono text-xs text-muted">${esc(story.ticker)}</span>
         <span class="max-w-2xl truncate text-sm text-white">${esc(story.headline)}</span>
         <span class="shrink-0 text-xs tabular-nums text-dim">${esc(story.date)}</span>
     </button>`;
+    const chip = holder.firstElementChild;
+    if (decorative) {
+        chip.tabIndex = -1;
+        chip.setAttribute('aria-hidden', 'true');
+    }
+    return chip;
+}
+
+// One pass through the headlines, repeated as many times as the strip is wide, so the wrap
+// never shows a gap - which is the whole reason the seams are invisible. The pass runs oldest
+// to newest, so the strip drifts into the newest headlines and a story that leaves the window
+// drops off the end the drift has already passed.
+function buildNewsRuns(stories) {
+    const track = newsTrack();
+    track.innerHTML = '';
+    const ordered = [...stories].reverse();
+    const lead = document.createElement('div');
+    lead.className = 'newswire-run';
+    lead.dataset.role = 'lead';
+    for (const story of ordered) lead.appendChild(storyChip(story));
+    track.appendChild(lead);
+
+    const gap = newsGap();
+    const width = el('news-viewport').clientWidth;
+    const pitch = lead.getBoundingClientRect().width + gap;
+    const copies = pitch > 0 ? Math.max(2, Math.ceil((width + gap) / pitch) + 1) : 2;
+    for (let i = 1; i < copies; i += 1) {
+        const echo = lead.cloneNode(true);
+        echo.dataset.role = 'echo';
+        echo.setAttribute('aria-hidden', 'true');
+        for (const chip of echo.children) chip.tabIndex = -1;
+        track.appendChild(echo);
+    }
+
+    newsIds = ordered.map((story) => story.id);
+    // Start at the newest end of the pass, so a strip opened on a long session shows today's
+    // headlines rather than a month of history before them.
+    newsOffset = Math.max(0, pitch - width);
+    measureNews();
 }
 
 function renderNews(state) {
     const stories = state.news || [];
-    const signature = stories.map((story) => story.id).join('|');
+    const ids = stories.map((story) => story.id);
+    const signature = ids.join('|');
     if (signature === newsSignature) return;
     newsSignature = signature;
     newsStories = stories;
 
     el('news-count').textContent = `${stories.length} ${stories.length === 1 ? 'story' : 'stories'}`;
-    const track = el('news-track');
     if (!stories.length) {
-        track.innerHTML = '<p class="text-xs text-dim">Headlines show up as the clock moves.</p>';
-        track.style.removeProperty('--newswire-duration');
+        newsTrack().innerHTML = '<p class="text-xs text-dim">Headlines show up as the clock moves.</p>';
+        newsIds = [];
+        newsPitch = 0;
+        newsSpeed = 0;
         return;
     }
 
-    track.innerHTML = stories.map((story) => storyChip(story)).join('')
-        + stories.map((story) => storyChip(story, true)).join('');
-    const seconds = Math.max(NEWSWIRE_MIN_SECONDS, stories.length * NEWSWIRE_SECONDS_PER_STORY);
-    track.style.setProperty('--newswire-duration', `${seconds}s`);
+    // The window only ages out from the old end, and the strip is rendered oldest first, so a
+    // headline that leaves it is always one of the leading chips: the strip can let it go
+    // without disturbing anything the player can see. Anything else (a restart, a different
+    // session) is a genuinely different strip and gets rebuilt.
+    const wanted = new Set(ids);
+    const departed = newsIds.filter((id) => !wanted.has(id));
+    const agesOut = departed.length < newsIds.length
+        && departed.every((id, index) => newsIds[index] === id);
+    if (!newsIds.length || !agesOut) {
+        buildNewsRuns(stories);
+        return;
+    }
+
+    const known = new Set(newsIds);
+    // The state arrives newest first; arrivals go on the end in the order they happened.
+    const arrivals = stories.filter((story) => !known.has(story.id)).reverse();
+
+    const runs = newsRuns();
+    const widthBefore = newsRunWidth();
+    for (const run of runs) {
+        for (let i = 0; i < departed.length; i += 1) run.firstElementChild?.remove();
+    }
+    // Dropping chips shortens the pass, so the offset has to give up the same distance or the
+    // strip would jump backwards by exactly the width it just released.
+    const widthAfter = newsRunWidth();
+    newsPitch = widthAfter + newsGap();
+    if (newsPitch) {
+        newsOffset = ((newsOffset - (widthBefore - widthAfter)) % newsPitch + newsPitch) % newsPitch;
+    }
+
+    for (const run of runs) {
+        const decorative = run.dataset.role === 'echo';
+        for (const story of arrivals) run.appendChild(storyChip(story, decorative));
+    }
+    newsIds = newsIds.slice(departed.length).concat(arrivals.map((story) => story.id));
+    measureNews();
+    // Losing headlines shortens the pass, and a strip too short to cover the window would
+    // show its own tail: only then is it worth paying for a rebuild.
+    const viewport = el('news-viewport').clientWidth;
+    if ((runs.length - 1) * newsPitch < viewport) buildNewsRuns(stories);
 }
 
 // --- reading a story ------------------------------------------------------
@@ -761,7 +902,11 @@ async function advance(days = 1) {
         });
         render(state);
         logSignals(state.signals || []);
-        scheduleBasket();
+        // Same tick, not half a second behind it: the basket and equity panels used to land
+        // 500ms after the price chart, so a running clock looked like two separate redraws
+        // instead of one. The request itself is still coalesced inside refreshBasket, so a
+        // tick that arrives while one is in flight waits rather than stacking another.
+        scheduleBasket(0);
         // The lesson itself is still being written on a worker thread. Teacher mode stops
         // the clock now, on the tick that queued it, so the player is not three days past
         // the pattern by the time it can be explained.
@@ -815,6 +960,9 @@ function play() {
         timer = setTimeout(tick, Math.max(0, speed.ms - spent));
     };
     timer = setTimeout(tick, speed.ms);
+    // The charts ease their slide across the gap between ticks, so they move at the same rate
+    // the clock is running instead of hopping once per tick.
+    setChartCadence(speed.ms);
     el('play-btn').textContent = 'Pause';
     el('play-btn').className = PLAYING;
     setStatus('Playing', true);
@@ -823,6 +971,8 @@ function play() {
 function pause() {
     clearTimeout(timer);
     timer = null;
+    // Stopped, a step is a single deliberate move, so the charts go back to the short ease.
+    setChartCadence(0);
     el('play-btn').textContent = 'Play';
     el('play-btn').className = PRIMARY;
     setStatus('Paused', false);
@@ -1426,14 +1576,20 @@ el('signals-toggle').addEventListener('click', () => setSignalsOpen(true));
 el('signals-open-btn').addEventListener('click', () => setSignalsOpen(true));
 el('reader-close').addEventListener('click', () => closeStory());
 el('reader-resume').addEventListener('click', () => closeStory({ resume: true }));
-// Delegated: the strip holds every story twice, so the listener is on the track rather than
-// on forty buttons that are replaced whenever a headline arrives.
+// Delegated: the strip holds every story several times over, so the listener is on the track
+// rather than on buttons that are replaced whenever a headline arrives.
 el('news-track').addEventListener('click', (event) => {
     const chip = event.target.closest('.news-chip');
     if (!chip) return;
     const story = newsStories.find((row) => row.id === chip.dataset.story);
     if (story) openStory(story);
 });
+// The strip holds still under the pointer, so a passing headline can be caught and read. A
+// touch pointer reports a hover it never leaves, so it is left out of this.
+el('news-viewport').addEventListener('pointerenter', (event) => {
+    if (event.pointerType !== 'touch') newsHovered = true;
+});
+el('news-viewport').addEventListener('pointerleave', () => { newsHovered = false; });
 el('signals-close').addEventListener('click', () => setSignalsOpen(false));
 el('signal-backdrop').addEventListener('click', () => setSignalsOpen(false));
 document.addEventListener('keydown', (event) => {

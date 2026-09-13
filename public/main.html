@@ -81,63 +81,67 @@
 
 
   <section id="slide-1" class="min-h-screen pt-28 pb-16 flex flex-col justify-center max-w-7xl mx-auto px-6 md:px-10 relative">
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
-      
-      <div class="lg:col-span-6 flex flex-col justify-between gap-8 slide-left">
-        <div>
-          <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 mb-6">
-            Autonomous Market AI
-          </span>
-          <h1 class="text-5xl md:text-7xl font-black tracking-tight leading-[1.08] text-white">
-            Your very own <br />
-            <span class="text-transparent bg-clip-text bg-gradient-to-r from-white via-slate-200 to-gray-400">LLM-Based Stock</span><br />
-            Simulation
-          </h1>
-        </div>
+    <!-- One centred axis: the statement, then the two halves of it - vision and mission -
+         paired side by side, then the quality banner closing the block. Two columns that
+         each pinned content to top and bottom used to push the headline to the far left,
+         the cards to the far right, and leave a canyon of empty glass in between. -->
+    <div class="w-full max-w-5xl mx-auto flex flex-col items-center text-center slide-left">
+      <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+        Autonomous Market AI
+      </span>
+      <h1 class="mt-6 text-5xl md:text-6xl font-black tracking-tight leading-[1.08] text-white max-w-3xl">
+        Your very own
+        <span class="text-transparent bg-clip-text bg-gradient-to-r from-white via-slate-200 to-gray-400">LLM-Based Stock Simulation</span>
+      </h1>
+    </div>
 
-        <div class="glass-card rounded-3xl p-8 hover:border-cyan-400/40 transition-all group">
-          <div class="mb-5 flex h-12 w-12 items-center justify-center rounded-full bg-cyan-400 text-panel transition-transform group-hover:rotate-12">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
-              <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          </div>
-          <h2 class="text-2xl font-bold mb-3 tracking-tight">vision</h2>
-          <p class="text-gray-400 text-sm leading-relaxed">
-            Users will be able to buy and sell stocks in a safe, synthetically augmented environment—eliminating financial downside through generative agent market simulations.
-          </p>
-        </div>
-      </div>
+    <div class="mt-12 w-full max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
 
-      <div class="lg:col-span-6 flex flex-col justify-between gap-8 slide-right">
-        <div class="glass-card rounded-3xl p-8 hover:border-cyan-400/40 transition-all flex-1 group">
-          <div class="mb-5 flex h-12 w-12 items-center justify-center rounded-full bg-cyan-400 text-panel transition-transform group-hover:scale-110">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
-              <circle cx="12" cy="12" r="9" />
-              <circle cx="12" cy="12" r="5" />
-              <circle cx="12" cy="12" r="1.5" fill="currentColor" />
-            </svg>
-          </div>
-          <h2 class="text-2xl font-bold mb-3 tracking-tight">The mission</h2>
-          <p class="text-gray-400 text-sm leading-relaxed">
-            To pioneer autonomous agent intelligence in retail algorithmic trading. We equip modern investors with neural execution backtesting, multi-variable portfolio hedging, and zero-risk simulation tools that replicate authentic institutional order-flow behavior.
-          </p>
-        </div>
-
-        <div class="relative overflow-hidden rounded-3xl bg-gradient-to-r from-cyan-400 via-teal-500 to-emerald-400 p-8 flex items-end justify-between text-panel shadow-2xl min-h-[160px] group">
-          <h3 class="text-3xl font-black leading-tight max-w-[200px] tracking-tight">
-            highest standards of quality
-          </h3>
-          <svg class="h-20 w-32 transform transition-transform group-hover:scale-110" viewBox="0 0 120 80" fill="none">
-            <path d="M8 64 L40 42 L64 52 L110 14" stroke="#0c0d10" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M90 14 H110 V34" stroke="#0c0d10" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
-            <rect x="12" y="52" width="12" height="24" rx="2" fill="#0c0d10" fill-opacity="0.8"/>
-            <rect x="38" y="38" width="12" height="38" rx="2" fill="#0c0d10" fill-opacity="0.8"/>
-            <rect x="64" y="24" width="12" height="52" rx="2" fill="#0c0d10" fill-opacity="0.8"/>
+      <!-- Vision -->
+      <div class="glass-card rounded-3xl p-8 flex flex-col hover:border-cyan-400/40 transition-all group slide-left">
+        <div class="mb-5 flex h-12 w-12 items-center justify-center rounded-full bg-cyan-400 text-panel transition-transform group-hover:rotate-12">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
         </div>
+        <h2 class="text-2xl font-bold mb-3 tracking-tight">vision</h2>
+        <p class="text-gray-400 text-sm leading-relaxed">
+          Users will be able to buy and sell stocks in a safe, synthetically augmented environment—eliminating financial downside through generative agent market simulations.
+        </p>
       </div>
 
+      <!-- The mission is the other half of the same statement, so it sits beside the vision
+           instead of on the far side of the page from it. -->
+      <div class="glass-card rounded-3xl p-8 flex flex-col hover:border-cyan-400/40 transition-all group slide-right">
+        <div class="mb-5 flex h-12 w-12 items-center justify-center rounded-full bg-cyan-400 text-panel transition-transform group-hover:scale-110">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+            <circle cx="12" cy="12" r="9" />
+            <circle cx="12" cy="12" r="5" />
+            <circle cx="12" cy="12" r="1.5" fill="currentColor" />
+          </svg>
+        </div>
+        <h2 class="text-2xl font-bold mb-3 tracking-tight">The mission</h2>
+        <p class="text-gray-400 text-sm leading-relaxed">
+          To pioneer autonomous agent intelligence in retail algorithmic trading. We equip modern investors with neural execution backtesting, multi-variable portfolio hedging, and zero-risk simulation tools that replicate authentic institutional order-flow behavior.
+        </p>
+      </div>
+
+    </div>
+
+    <div class="mt-6 w-full max-w-5xl mx-auto slide-right">
+      <div class="relative overflow-hidden rounded-3xl bg-gradient-to-r from-cyan-400 via-teal-500 to-emerald-400 px-8 py-7 flex items-center justify-between gap-8 text-panel shadow-2xl group">
+        <h3 class="text-2xl md:text-3xl font-black leading-tight tracking-tight max-w-md">
+          highest standards of quality
+        </h3>
+        <svg class="h-16 w-28 shrink-0 transform transition-transform group-hover:scale-110" viewBox="0 0 120 80" fill="none">
+          <path d="M8 64 L40 42 L64 52 L110 14" stroke="#0c0d10" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M90 14 H110 V34" stroke="#0c0d10" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <rect x="12" y="52" width="12" height="24" rx="2" fill="#0c0d10" fill-opacity="0.8"/>
+          <rect x="38" y="38" width="12" height="38" rx="2" fill="#0c0d10" fill-opacity="0.8"/>
+          <rect x="64" y="24" width="12" height="52" rx="2" fill="#0c0d10" fill-opacity="0.8"/>
+        </svg>
+      </div>
     </div>
   </section>
 
@@ -148,12 +152,13 @@
       <h2 class="text-4xl md:text-5xl font-extrabold mt-2">Operational Foundation</h2>
     </div>
 
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5 slide-stagger-group">
-      
-      <!-- Card 1 (Active / Highlighted) -->
-      <div class="framework-card rounded-3xl p-7 flex flex-col justify-between h-[360px] bg-gradient-to-b from-teal-500 to-cyan-500 text-panel shadow-lg transition-all duration-300 hover:-translate-y-2">
-        <h3 class="text-2xl font-bold leading-tight">
-          Financial<br />Planning<br />and<br />Analysis
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 slide-stagger-group">
+
+      <!-- Card 1 (Active / Highlighted): the featured pillar takes two columns so its title
+           reads as a phrase instead of a stack of hyphenated fragments. -->
+      <div class="framework-card lg:col-span-2 rounded-3xl p-8 min-h-[240px] flex flex-col justify-between gap-10 bg-gradient-to-b from-teal-500 to-cyan-500 text-panel shadow-lg transition-all duration-300 hover:-translate-y-2">
+        <h3 class="text-3xl md:text-4xl font-bold leading-tight max-w-md">
+          Financial Planning and Analysis
         </h3>
         <div class="flex justify-end">
           <div class="w-10 h-10 rounded-full bg-white text-panel flex items-center justify-center">
@@ -163,9 +168,9 @@
       </div>
 
       <!-- Card 2 -->
-      <div class="framework-card rounded-3xl p-7 flex flex-col justify-between h-[360px] glass-card border border-white/5 hover:border-cyan-400/40 hover:-translate-y-2 transition-all duration-300 group">
+      <div class="framework-card rounded-3xl p-8 min-h-[240px] flex flex-col justify-between gap-10 glass-card border border-white/5 hover:border-cyan-400/40 hover:-translate-y-2 transition-all duration-300 group">
         <h3 class="text-2xl font-bold text-white leading-tight">
-          Accounting<br />and<br />Compliance
+          Accounting and Compliance
         </h3>
         <div class="flex justify-end">
           <div class="w-10 h-10 rounded-full border border-white/30 text-white flex items-center justify-center group-hover:border-cyan-400 group-hover:text-cyan-400 transition-colors">
@@ -175,9 +180,9 @@
       </div>
 
       <!-- Card 3 -->
-      <div class="framework-card rounded-3xl p-7 flex flex-col justify-between h-[360px] glass-card border border-white/5 hover:border-cyan-400/40 hover:-translate-y-2 transition-all duration-300 group">
+      <div class="framework-card rounded-3xl p-8 min-h-[240px] flex flex-col justify-between gap-10 glass-card border border-white/5 hover:border-cyan-400/40 hover:-translate-y-2 transition-all duration-300 group">
         <h3 class="text-2xl font-bold text-white leading-tight">
-          Cost<br />Manage-<br />ment
+          Cost Management
         </h3>
         <div class="flex justify-end">
           <div class="w-10 h-10 rounded-full border border-white/30 text-white flex items-center justify-center group-hover:border-cyan-400 group-hover:text-cyan-400 transition-colors">
@@ -187,9 +192,9 @@
       </div>
 
       <!-- Card 4 -->
-      <div class="framework-card rounded-3xl p-7 flex flex-col justify-between h-[360px] glass-card border border-white/5 hover:border-cyan-400/40 hover:-translate-y-2 transition-all duration-300 group">
+      <div class="framework-card rounded-3xl p-8 min-h-[240px] flex flex-col justify-between gap-10 glass-card border border-white/5 hover:border-cyan-400/40 hover:-translate-y-2 transition-all duration-300 group">
         <h3 class="text-2xl font-bold text-white leading-tight">
-          Treasury<br />and Risk<br />Mana-<br />gement
+          Treasury and Risk Management
         </h3>
         <div class="flex justify-end">
           <div class="w-10 h-10 rounded-full border border-white/30 text-white flex items-center justify-center group-hover:border-cyan-400 group-hover:text-cyan-400 transition-colors">
@@ -199,9 +204,9 @@
       </div>
 
       <!-- Card 5 -->
-      <div class="framework-card rounded-3xl p-7 flex flex-col justify-between h-[360px] glass-card border border-white/5 hover:border-cyan-400/40 hover:-translate-y-2 transition-all duration-300 group">
+      <div class="framework-card rounded-3xl p-8 min-h-[240px] flex flex-col justify-between gap-10 glass-card border border-white/5 hover:border-cyan-400/40 hover:-translate-y-2 transition-all duration-300 group">
         <h3 class="text-2xl font-bold text-white leading-tight">
-          Perfor-<br />mance<br />Measure-<br />ment
+          Performance Measurement
         </h3>
         <div class="flex justify-end">
           <div class="w-10 h-10 rounded-full border border-white/30 text-white flex items-center justify-center group-hover:border-cyan-400 group-hover:text-cyan-400 transition-colors">
@@ -415,11 +420,8 @@
         
 
         <!-- Github Repo -->
-        <a href="https://github.com/MontyPython-HTML/hackRice26 " class="flex items-center gap-3 px-6 py-3.5 rounded-full border border-white/15 bg-white/5 backdrop-blur-md text-sm text-gray-200 hover:border-cyan-400 hover:text-white transition-all hover:scale-105 active:scale-95">
-          <span class="flex h-7 w-7 items-center justify-center rounded-full bg-white text-black">
-            <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20"><path d="M2.003 5.884L10 9.882l7.997-3.998A2 2 0 0016 4H4a2 2 0 00-1.997 1.884z"/><path d="M18 8.118l-8 4-8-4V14a2 2 0 002 2h12a2 2 0 002-2V8.118z"/></svg>
-          </span>
-          <span >Lets Get Started</span>
+        <a href="https://github.com/MontyPython-HTML/hackRice26" class="px-7 py-3.5 rounded-full border border-white/15 bg-white/5 backdrop-blur-md text-sm font-medium text-gray-200 hover:border-cyan-400 hover:text-white transition-all hover:scale-105 active:scale-95">
+          Lets Get Started
         </a>
 
       </div>
