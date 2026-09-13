@@ -1,53 +1,54 @@
 <div align="center">
 
-# Hackrice 2026
+# StockSim
 
-**StockSim** — a trading teacher that runs on real market history.
+Replay real market history, trade it, and still have to pay rent.
 
-<sub>Monty Python & HTML</sub>
+<sub>Hackrice 2026 &middot; Monty Python &amp; HTML</sub>
+
+[Landing page](public/index.html) &middot; [API docs](docs/API.md) &middot; [Every setting](.env.example)
 
 </div>
 
 ---
 
-## What this is
+## What it is
 
-Pick a **basket** of stocks and replay a real stretch of their history a day at a time,
-trading against the close while watching the signals traders actually read — SMA
-crossovers, RSI, MACD, volume spikes. The chart follows one symbol at a time; beside it you
-get the whole basket rebased to 100, so correlated names look correlated, and your account
-equity day by day.
+Pick a **basket** of stocks and replay a real stretch of their history one trading day at a
+time. You trade against the close while the signals those names actually printed sit on the
+chart beside you: SMA crossovers, RSI, MACD, volume spikes. The main chart follows one symbol
+at a time. Next to it you get the whole basket rebased to 100, so correlated names look
+correlated, and your account equity day by day.
 
-Three things make it a teacher rather than a chart viewer:
+Three things make it more than a chart viewer:
 
-- **The coach is a curriculum.** When one of *your* stocks prints a pattern (golden cross,
-  death cross, the MACD crossovers, RSI extremes, a volume spike), a lesson card explains
-  the pattern that is on *your* chart, quoting that bar's numbers. A pattern you have never
-  been shown is taught on sight; one you have met comes back only after enough sessions
-  have passed to be worth re-reading. The **Pattern school** panel tracks the syllabus per
-  session.
-- **The market keeps going.** When the real data runs out you roll into a **simulated
-  future** — a generated price series plus AI-invented market events that move it. Those
-  events have a **scope**: a company story moves one symbol, a sector story every name you
-  hold in that sector, a macro story the whole basket. Five semiconductor names are not
-  five bets.
-- **The money is real-shaped.** Starting cash, a paycheck and eight recurring bills come
-  from a Nessie bank account, and as the clock passes each bill's day the money leaves the
-  same balance you trade with. Cash never goes below zero: a bill it cannot cover makes the
-  bank sell shares.
+- **The coach teaches on your own chart.** When one of your holdings prints a pattern (golden
+  cross, death cross, the MACD crossovers, an RSI extreme, a volume spike), a lesson card
+  explains the pattern your chart is drawing right then, quoting that bar's numbers. Meet a
+  pattern for the first time and it is explained on sight; meet it again and it comes back
+  only after enough sessions have passed to be worth re-reading. The **Pattern school** panel
+  tracks the syllabus session by session.
+- **The market keeps going.** Real data runs out eventually. From there the session rolls
+  into a **simulated future**: a generated price series plus AI-invented news that moves it.
+  Every event carries a **scope**. A company story moves one symbol, a sector story moves
+  every name you hold in that sector, a macro story moves the whole basket.
+- **The bills are real.** Starting cash, a paycheck and eight recurring bills come from a
+  Nessie bank account, and as the clock passes each bill's day the money leaves the same
+  balance you trade from. Cash never goes below zero: a bill you cannot cover makes the bank
+  sell shares.
 
-The **training levels** on the landing page are five short graded runs that switch off every
-panel they are not teaching and score each trade against one rule, for learning the game
-before playing it.
+The **training levels** are five short graded runs. Each one switches off every panel it is
+not teaching and scores each trade against a single rule, so you can learn the game before
+you play it.
 
-Prices, sessions, trades, dividends and events live in **TigerData** (TimescaleDB).
+Prices, sessions, trades, dividends and events all live in **TigerData** (TimescaleDB).
 
 ## Quick start
 
 ```sh
 uv sync                     # installs the project and fetches Python 3.14 if needed
 
-cp .env.example .env        # then fill in the TigerData connection — see Configuration
+cp .env.example .env        # then fill in the TigerData connection (see Configuration)
 
 # 1. create the tables and seed the ticker catalog (Nasdaq-100 + a few extras)
 uv run python -m scripts.ingestion.sync_universe --init-schema
@@ -72,8 +73,8 @@ straight after a clone and you do not need Node until you change a template.
 
 ## Configuration
 
-Everything is environment variables, read through `src/config.py`. `.env.example` is the
-annotated full list — this is the short version of what actually matters.
+Everything is an environment variable, read through `src/config.py`. `.env.example` is the
+annotated full list; this is the short version of what actually matters.
 
 **Required**
 
@@ -88,20 +89,20 @@ annotated full list — this is the short version of what actually matters.
 |---|---|---|
 | `GEMINI_API_KEY` | *(unset)* | Turns on the AI coach, AI-invented market events and Gemini-taught lessons. `GEMINI_API_KEY2` is read as a second key. |
 | `GEMINI_MODEL` | `gemini-3.6-flash` | Which model the coach and event generator use. |
-| `NESSIE_USE_MOCK` | `true` | `true` serves the bank from `src/temp/nessie_mock_data.json` — bills included, no network. |
+| `NESSIE_USE_MOCK` | `true` | `true` serves the bank from `src/temp/nessie_mock_data.json`, bills included, no network. |
 | `NESSIE_API_KEY`, `NESSIE_DEFAULT_CUSTOMER_ID` | | Needed once `NESSIE_USE_MOCK=false`, after `seed_nessie` has created a sandbox customer. |
 
-**Tuning** — `.env.example` documents each one properly; the groups are the simulated future
+**Tuning.** `.env.example` documents each one properly. The groups are the simulated future
 (`SIMULATION_*`), the events that bend it (`SHOCK_*`), the pattern curriculum
 (`PATTERN_*`), gameplay pacing (`RANDOM_EVENT_PROBABILITY`, `PREDICTION_INTERVAL_DAYS`,
 `MIN_DAYS_BETWEEN_EVENTS`, `MAX_WATCHLIST`) and the connection pool (`DB_POOL_*`).
 
 ### Running without an API key
 
-This is a supported configuration, not a degraded one. With no `GEMINI_API_KEY`:
+You do not need a Gemini key. This is a supported way to run it, not a broken one:
 
-- predictions are skipped and the coach panel says so, disabling its button rather than
-  failing silently (`GET /api/ai/status` reports why);
+- predictions are skipped and the coach panel says why, disabling its button instead of
+  failing silently (`GET /api/ai/status` reports the reason);
 - market events fall back to a locally generated headline, so the simulated market still
   moves during a demo;
 - pattern lessons come from the built-in syllabus in `src/scripts/game/patterns.py`.
@@ -126,8 +127,8 @@ uv run python -m scripts.ingestion.ingest_prices --universe nasdaq100 --start 20
 ```
 
 Pass `--start` far enough back to get real depth: the landing page offers each symbol's own
-full stored range, and "all history" on a 1980 listing reaches back to 1980. A whole-universe
-ingest is slow on purpose — yfinance rate-limits, so the loader paces itself.
+full stored range, so "all history" on a 1980 listing reaches back to 1980. A whole-universe
+ingest is slow on purpose: yfinance rate-limits, so the loader paces itself.
 
 Three more one-shot CLIs, none of them needed for the quick start:
 
@@ -139,16 +140,17 @@ Three more one-shot CLIs, none of them needed for the quick start:
 
 ## The checks
 
-Four suites in `src/scripts/checks/`. They are not unit tests — they drive the real engine
-against the real database the way the page does, then read back what the ledger, the cash
-balance and the JSON the browser receives actually say, and delete the sessions they create.
+Four suites in `src/scripts/checks/`, 136 checks between them. They are not unit tests. They
+drive the real engine against the real database the way the page does, read back what the
+ledger, the cash balance and the JSON the browser receives actually say, then delete the
+sessions they created.
 
-| Suite | Covers | Needs the app running? |
-|---|---|---|
-| `smoke_finance` | Dividends, bills, paychecks, the return split | yes |
-| `smoke_ahead` | The day-ahead chart preview matching the tick that follows it | yes |
-| `smoke_chart` | Chart x-axis width, so a growing series does not re-space itself | yes |
-| `smoke_database` | Pool saturation, timeouts, dead connections | no |
+| Suite | Checks | Covers | Needs the app up? |
+|---|---|---|---|
+| `smoke_finance` | 89 | Dividends, bills, paychecks, the return split | yes |
+| `smoke_ahead` | 16 | The day-ahead chart preview matching the tick that follows it | yes |
+| `smoke_chart` | 19 | Chart x-axis width, so a growing series does not re-space itself | yes |
+| `smoke_database` | 12 | Pool saturation, timeouts, dead connections | no |
 
 ```sh
 ./run.sh &                  # three of the four talk to http://127.0.0.1:5000
@@ -169,7 +171,7 @@ suite prints `n/n checks passed` and exits non-zero on any failure.
 src/
   app.py                    Flask app, the two page routes, the JSON error handler
   config.py                 every setting, read from the environment
-  routes/game_routes.py     all /api/* handlers (thin — they parse, then call engine)
+  routes/game_routes.py     all /api/* handlers (thin: they parse, then call engine)
   mcp_server/               the MCP server and its Gemini tools
   scripts/
     game/                   engine (sessions, trades, the clock), indicators,
@@ -186,16 +188,15 @@ src/
     js/game.js              the frontend: play/pause/speed, trades, panels
     js/chart-setup.js       TradingView Lightweight Charts: price, RSI, MACD,
                             the rebased basket and the equity curve
-public/                     the standalone marketing page — static HTML/CSS/JS, not served by Flask
+public/                     the standalone landing page: static HTML/CSS/JS, not served by Flask
 ```
 
 The two page routes are `/` (pick a basket or a training level) and `/game/<session_id>`.
-`public/` is not served by Flask — it is a static landing page with its own CSS and JS.
 
 ## Front-end styles
 
 Templates use Tailwind v4. `src/static/prod/output.css` is a **built, committed** file, so
-the app looks right straight after a clone — but if you edit a template or a JS file, a new
+the app looks right straight after a clone. If you edit a template or a JS file, though, a new
 class will not exist until you rebuild:
 
 ```sh
@@ -222,11 +223,11 @@ Either keep `NESSIE_USE_MOCK=true`, or run `seed_nessie` and point
 `NESSIE_DEFAULT_CUSTOMER_ID` at the customer it prints.
 
 **A symbol is greyed out on the landing page.** It is in the catalog but has no price
-history — run `ingest_prices` for it.
+history, so run `ingest_prices` for it.
 
 ## Docs
 
-- [`docs/API.md`](docs/API.md) — every route, the full session state object, how the
+- [`docs/API.md`](docs/API.md): every route, the full session state object, how the
   simulated future and its shocks work, bills and the bank account, the Daily Ledger,
   teacher mode, the training levels, and a file-by-file map.
-- [`.env.example`](.env.example) — every setting, annotated.
+- [`.env.example`](.env.example): every setting, annotated.
