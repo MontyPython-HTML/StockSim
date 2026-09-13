@@ -28,7 +28,9 @@ window.addEventListener("load", () => {
       mouseX = e.clientX;
       mouseY = e.clientY;
     });
-    const hoverTargets = document.querySelectorAll("a, button, .glass-card, .framework-card");
+    // Only real interactive elements swell the cursor. The cards used to be in this
+    // list, which made every hover look clickable even though none of them do anything.
+    const hoverTargets = document.querySelectorAll("a, button");
     hoverTargets.forEach((target) => {
       target.addEventListener("mouseenter", () => {
         gsap.to(follower, { scale: 1.8, background: "#ffffff", opacity: 0.8, duration: 0.2 });
