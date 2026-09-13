@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS stock_prices (
     low         NUMERIC(14,4) NOT NULL,
     close       NUMERIC(14,4) NOT NULL,
     adj_close   NUMERIC(14,4),
+    dividend    NUMERIC(14,6) NOT NULL DEFAULT 0,
     volume      BIGINT NOT NULL,
     PRIMARY KEY (ticker, ts)
 );
@@ -43,6 +44,9 @@ CREATE TABLE IF NOT EXISTS game_sessions (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS finances_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+
 
 -- The symbols a player chose to trade. sort_order preserves pick order so the first
 -- one picked is the default chart focus.
@@ -225,3 +229,19 @@ ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS salary_amount NUMERIC(14,2) N
 
 -- Shares the bank sold to cover a bill the cash could not.
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS forced BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE stock_prices ADD COLUMN IF NOT EXISTS dividend NUMERIC(14,6) NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS dividend_payments (
+    id          BIGSERIAL PRIMARY KEY,
+    session_id  UUID NOT NULL REFERENCES game_sessions(id) ON DELETE CASCADE,
+    ticker      TEXT NOT NULL,
+    ex_date     DATE NOT NULL,
+    shares      NUMERIC(18,6) NOT NULL,
+    per_share   NUMERIC(14,6) NOT NULL,
+    amount      NUMERIC(14,2) NOT NULL,
+    cash_after  NUMERIC(14,2) NOT NULL,
+    UNIQUE (session_id, ticker, ex_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dividend_payments_session
+    ON dividend_payments (session_id, ex_date);

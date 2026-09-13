@@ -83,3 +83,25 @@ html {
         text-orientation: mixed;
     }
 }
+
+/* Utility cards. A grid would set every card in a row to the height of the tallest one and
+   leave a hole under its shorter neighbour, which is what made the right rail read as a
+   column of empty space. These cards pack one after another instead, and only split into
+   two balanced columns once there is real width to fill. */
+@layer components {
+    .card-flow > * {
+        break-inside: avoid;
+        margin-bottom: 1.5rem;
+    }
+
+    .card-flow > *:last-child {
+        margin-bottom: 0;
+    }
+
+    @media (min-width: 80rem) {
+        .card-flow--2 {
+            columns: 2;
+            column-gap: 1.5rem;
+        }
+    }
+}

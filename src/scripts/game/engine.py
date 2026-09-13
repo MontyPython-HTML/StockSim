@@ -123,13 +123,15 @@ def _portfolio(
         "cash_balance": cash,
         "net_worth": net_worth,
         "starting_cash": starting_cash,
-        "total_return_pct": (net_worth - starting_cash) / starting_cash * 100,
+        # This headline is deliberately stock performance only: salaries and bills are
+        # excluded, while dividends remain investment income from the holdings.
+        "total_return_pct": (net_worth + bills_paid - salary_earned - starting_cash) / starting_cash * 100 if starting_cash else 0.0,
         # Rent is not a trading loss and a paycheck is not a trading gain. The account number
         # decides whether the player went broke; this one is the only fair read on their
         # decisions, and showing both is what makes the difference teachable.
         "bills_paid": bills_paid,
         "salary_earned": salary_earned,
-        "trading_return_pct": (net_worth + bills_paid - salary_earned - starting_cash) / starting_cash * 100,
+        "trading_return_pct": (net_worth + bills_paid - salary_earned - starting_cash) / starting_cash * 100 if starting_cash else 0.0,
         "overdrawn": cash < 0,
     }
 
@@ -194,6 +196,15 @@ def _state_from_bundle(
             for ticker in watchlist
         ],
         "portfolio": _portfolio(session, bundle["holdings"], closes, bills_paid, salary_earned),
+        "dividends": [
+            {**row, "ex_date": _as_date(row["ex_date"]).isoformat(), "amount": float(row["amount"])}
+            for row in bundle.get("dividends") or []
+        ],
+        "dividends_paid": sum(float(row["amount"]) for row in bundle.get("dividends") or []),
+        "dividend_summary": {
+            "total": sum(float(row["amount"]) for row in bundle.get("dividends") or []),
+            "payments": len(bundle.get("dividends") or []),
+        },
         "chart": indicators.to_series(history.tail(window_days)),
         "trades": [
             {
@@ -224,7 +235,10 @@ def _state_from_bundle(
             **expenses.summary(session, sim_date, ledger),
             "charged": [expenses.ledger_row(row) for row in ledger],
         },
-        "bank": {"source": nessie.source_label(), **expenses.bank_for(session)},
+        "bank": {
+            "source": nessie.source_label() if session.get("finances_enabled", True) else "Pure stock simulation",
+            **(expenses.bank_for(session) if session.get("finances_enabled", True) else {"customer": None, "account": None, "employer": None}),
+        },
         "news": news.headlines(session, sim_date, bundle["events"], sources),
     }
 
@@ -285,6 +299,8 @@ def start_session(
     volatility: float | None = None,
     seed: int | None = None,
     salary_amount: Decimal | None = None,
+    use_finances: bool = True,
+    initial_cash: Decimal | None = None,
 ) -> dict:
     """Start a run over a watchlist.
 
@@ -301,11 +317,22 @@ def start_session(
     first_day, session_end = _window_for(watchlist, start_date, end_date)
 
     customer_id = nessie_customer_id or config.NESSIE_DEFAULT_CUSTOMER_ID
-    try:
-        starting_cash, account = nessie.get_starting_funds(customer_id)
-    except ValueError as exc:
-        raise GameError(str(exc))
-    salary = expenses.default_paycheck(account["_id"]) if salary_amount is None else salary_amount
+    account = {"_id": None, "nickname": "Pure simulation", "type": "Simulation", "balance": 0}
+    if use_finances:
+        try:
+            starting_cash, account = nessie.get_starting_funds(customer_id)
+        except ValueError as exc:
+            raise GameError(str(exc))
+        salary = expenses.default_paycheck(account["_id"]) if salary_amount is None else salary_amount
+        account_id = account["_id"]
+        session_customer_id = customer_id
+    else:
+        starting_cash = initial_cash if initial_cash is not None else Decimal("10000")
+        if starting_cash < 0:
+            raise GameError("Starting cash cannot be negative.")
+        salary = Decimal("0")
+        account_id = None
+        session_customer_id = None
 
     session = database.create_session(
         session_id=str(uuid.uuid4()),
@@ -313,9 +340,10 @@ def start_session(
         end_date=session_end,
         sim_date=first_day,
         starting_cash=starting_cash,
-        nessie_customer_id=customer_id,
-        nessie_account_id=account["_id"],
+        nessie_customer_id=session_customer_id,
+        nessie_account_id=account_id,
         salary_amount=salary,
+        finances_enabled=use_finances,
     )
     session_id = str(session["id"])
     database.set_session_tickers(session_id, watchlist)
@@ -338,7 +366,7 @@ def start_session(
 
     state = get_state(session_id)
     state["funding"] = {
-        "source": nessie.source_label(),
+        "source": nessie.source_label() if use_finances else "Pure stock simulation",
         "account_nickname": account.get("nickname"),
         "account_type": account.get("type"),
         "balance": float(starting_cash),
@@ -617,7 +645,13 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
 
     # Bills and paychecks for the days just crossed, settled before the clock is saved: if
     # this fails the date stays put, and the retry re-walks days the ledger already holds.
-    charged = expenses.apply_due(session, _as_date(session["sim_date"]), sim_date, watchlist)
+    previous_sim_date = _as_date(session["sim_date"])
+    charged = (
+        expenses.apply_due(session, previous_sim_date, sim_date, watchlist)
+        if session.get("finances_enabled", True)
+        else []
+    )
+    dividend_rows = database.settle_dividends(session_id, watchlist, previous_sim_date, sim_date)
 
     database.update_session(
         session_id,
@@ -642,6 +676,7 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
         fresh = database.load_session_bundle(session_id)
         bundle["holdings"], bundle["trades"] = fresh["holdings"], fresh["trades"]
     bundle["expenses"] = list(bundle.get("expenses") or []) + charged
+    bundle["dividends"] = list(bundle.get("dividends") or []) + dividend_rows
     state = _state_from_bundle(bundle, focus)
     state["signals"] = signals
     state["pending_ai"] = pending

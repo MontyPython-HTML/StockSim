@@ -23,6 +23,7 @@ def to_price_rows(ticker: str, frame: pd.DataFrame) -> list[tuple]:
     if frame.empty:
         return []
     adj_column = "Adj Close" if "Adj Close" in frame.columns else "Close"
+    dividend_column = "Dividends" if "Dividends" in frame.columns else None
     return [
         (
             ticker.upper(),
@@ -32,6 +33,7 @@ def to_price_rows(ticker: str, frame: pd.DataFrame) -> list[tuple]:
             float(row["Low"]),
             float(row["Close"]),
             float(row[adj_column]),
+            float(row[dividend_column]) if dividend_column and pd.notna(row[dividend_column]) else 0.0,
             int(row["Volume"]),
         )
         for _, row in frame.iterrows()

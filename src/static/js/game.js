@@ -52,14 +52,12 @@ let feedTimer = null;
 // lesson lands. `shownLessons` stops a lesson already taught from re-opening every time the
 // feed is re-rendered.
 const TEACHER_KEY = 'tradingTeacher.teacherMode';
-const ALERTS_KEY = 'tradingTeacher.transactionAlerts';
 const TOUR_KEY = 'tradingTeacher.tourDone';
 const LESSON_POLL_MS = 1200;
 // Past this the lesson is almost certainly not coming (no key, dead subprocess, Gemini
 // rate-limited). The player is let go rather than left staring at a spinner.
 const LESSON_WAIT_MS = 30000;
 let teacherMode = true;
-let showAlerts = true;
 let awaitingLesson = null;
 let lessonPollTimer = null;
 let lessonWaitStarted = 0;
@@ -224,9 +222,18 @@ function renderBills(state) {
     if (bills.earned_to_date) totals.push(`${money(bills.earned_to_date)} earned`);
     if (bills.missed_to_date) totals.push(`${money(bills.missed_to_date)} missed`);
     el('bills-paid').textContent = totals.length
-        ? `${totals.join(' · ')} so far this run. Your trading is ${signed(state.portfolio.trading_return_pct)}% `
-          + `on its own, ${signed(state.portfolio.total_return_pct)}% after bills and pay.`
+        ? `${totals.join(' · ')} so far this run. Stock performance is ${signed(state.portfolio.trading_return_pct)}%.`
         : '';
+    const dividends = state.dividends_paid || 0;
+    el('dividends-paid').textContent = money(dividends);
+    const dividendRows = state.dividends || [];
+    el('dividend-history').innerHTML = dividendRows.length
+        ? dividendRows.slice(-5).reverse().map((payment) => `
+            <div class="flex items-center justify-between gap-3 rounded-xl border border-up/20 bg-ink-soft px-3 py-2">
+                <span><span class="font-mono font-semibold">${esc(payment.ticker)}</span> · ${payment.ex_date}</span>
+                <span class="tabular-nums text-up">+${money(payment.amount)}</span>
+            </div>`).join('')
+        : '<p class="text-dim">No dividends received yet. Hold a dividend-paying stock through its ex-date.</p>';
 }
 
 function renderBank(state) {
@@ -245,11 +252,17 @@ function renderBank(state) {
     ].filter(Boolean).join(' · ');
     el('bank-start').textContent = money(state.portfolio.starting_cash);
     el('bank-paycheck').textContent = paycheck ? `${money(paycheck.amount)} / 2 weeks` : 'None';
-    el('bank-note').textContent = (bills.bill_count
-        ? `${bills.bill_count} bills take ${money(bills.monthly_total)} a month out of this account`
-        : 'No bills come out of this account')
-        + (paycheck ? `, and your paycheck brings in about ${money(paycheck.monthly)}.` : '.')
-        + ' If your cash cannot cover a bill, the bank sells your shares to pay it.';
+    el('bank-note').textContent = bills.enabled === false
+        ? 'Pure stock simulation: Nessie income and bills are disabled.'
+        : (bills.bill_count
+            ? `${bills.bill_count} bills take ${money(bills.monthly_total)} a month out of this account`
+            : 'No bills come out of this account')
+            + (paycheck ? `, and your paycheck brings in about ${money(paycheck.monthly)}.` : '.')
+            + ' If your cash cannot cover a bill, the bank sells your shares to pay it.';
+    const dividendTotal = state.dividends_paid || 0;
+    el('bank-dividend-note').textContent = dividendTotal
+        ? `${money(dividendTotal)} in investment dividends has been added to cash.`
+        : 'Dividends are separate from Nessie paychecks and are paid by the stocks you own.';
 }
 
 let newsSignature = null;
@@ -316,8 +329,8 @@ function render(state) {
     el('cash').textContent = money(portfolio.cash_balance);
     el('net-worth').textContent = money(portfolio.net_worth);
     const returnEl = el('return-pct');
-    returnEl.textContent = `${signed(portfolio.total_return_pct)}%`;
-    returnEl.className = `mt-1 text-3xl font-semibold tabular-nums ${toneFor(portfolio.total_return_pct)}`;
+    returnEl.textContent = `${signed(portfolio.trading_return_pct)}%`;
+    returnEl.className = `mt-1 text-3xl font-semibold tabular-nums ${toneFor(portfolio.trading_return_pct)}`;
 
     renderWatchlist(state);
     renderTradePanel(state);
@@ -523,47 +536,8 @@ function logSignals(signals) {
 
 // A bill leaving the account is an event the player should feel, not something they
 // discover later by noticing the cash number is smaller.
-function logCharges(charges) {
-    if (!showAlerts) return;
-    for (const charge of charges) {
-        if (charge.kind === 'salary') {
-            toast(
-                `Paycheck · +${money(charge.amount)}`,
-                `Paid in on ${charge.due_date}${charge.payee ? ` by ${esc(charge.payee)}` : ''}. ${money(charge.cash_after)} in cash.`,
-                'bullish',
-            );
-            continue;
-        }
-        for (const sale of charge.sold || []) {
-            toast(
-                `Bank sold ${sale.shares} ${sale.ticker}`,
-                `At ${money(sale.price)} on ${sale.date}, to cover ${esc(charge.label)}. You did not have the cash when it came due.`,
-                'bearish',
-            );
-        }
-        const missed = charge.shortfall > 0;
-        toast(
-            `${esc(charge.label)} · ${money(charge.amount + charge.shortfall)}`,
-            missed
-                ? `Due on ${charge.due_date}. Only ${money(charge.amount)} could be paid, even after selling everything - ${money(charge.shortfall)} missed.`
-                : `Paid on ${charge.due_date}. ${money(charge.cash_after)} left in cash.`,
-            missed ? 'bearish' : 'neutral',
-        );
-    }
-}
-
-function toast(title, message, direction) {
-    const tone = direction === 'bullish' ? 'border-up' :
-        direction === 'bearish' ? 'border-down' : 'border-line-strong';
-    const node = document.createElement('div');
-    node.className = `relative rounded-xl border border-line border-l-4 ${tone} bg-surface p-4 pr-11 shadow-xl`;
-    node.innerHTML = `
-        <button type="button" aria-label="Dismiss"
-            class="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded-full text-lg leading-none text-muted transition hover:bg-raised hover:text-white">&times;</button>
-        <div class="font-semibold mb-1">${title}</div><p class="text-sm text-muted leading-relaxed">${message}</p>`;
-    node.querySelector('button').addEventListener('click', () => node.remove());
-    el('toasts').appendChild(node);
-    setTimeout(() => node.remove(), 9000);
+function logCharges() {
+    // Charges remain visible in the Bills & dividends panel; no overlay notifications.
 }
 
 function setStatus(text, active) {
@@ -681,7 +655,7 @@ async function advance(days = 1) {
         });
         render(state);
         logSignals(state.signals || []);
-        logCharges(state.charged || []);
+        logCharges();
         scheduleBasket();
         // The lesson itself is still being written on a worker thread. Teacher mode stops
         // the clock now, on the tick that queued it, so the player is not three days past
@@ -754,7 +728,7 @@ function pause() {
 function finish(state) {
     pause();
     el('summary-range').textContent = `${state.tickers.join(', ')} · ${state.start_date} to ${state.sim_date}`;
-    const total = state.portfolio.total_return_pct;
+    const total = state.portfolio.trading_return_pct;
     const summary = el('summary-return');
     summary.textContent = `${signed(total)}%`;
     summary.className = `mb-3 text-6xl font-bold tabular-nums ${toneFor(total)}`;
@@ -778,7 +752,6 @@ async function trade(side, ticker, explicitShares) {
             body: JSON.stringify({ ticker: target, side, shares, focus: focus || target }),
         }));
         scheduleBasket(0);
-        if (showAlerts) toast(`${side} ${shares} ${target}`, `Filled at the close on ${latestState.sim_date}.`, 'neutral');
     } catch (error) {
         errorBox.textContent = error.message;
         errorBox.classList.remove('hidden');
@@ -825,12 +798,6 @@ function setTeacherMode(on) {
     teacherMode = on;
     el('teacher-mode').checked = on;
     try { localStorage.setItem(TEACHER_KEY, on ? '1' : '0'); } catch { /* private mode */ }
-}
-
-function setAlerts(on) {
-    showAlerts = on;
-    el('alerts-toggle').checked = on;
-    try { localStorage.setItem(ALERTS_KEY, on ? '1' : '0'); } catch { /* private mode */ }
 }
 
 function openCoach(job) {
@@ -1165,7 +1132,6 @@ el('play-btn').addEventListener('click', () => (timer ? pause() : play()));
 el('step-btn').addEventListener('click', () => advance(1));
 
 el('teacher-mode').addEventListener('change', (event) => setTeacherMode(event.target.checked));
-el('alerts-toggle').addEventListener('change', (event) => setAlerts(event.target.checked));
 el('coach-continue').addEventListener('click', () => closeCoach(false));
 el('coach-resume').addEventListener('click', () => closeCoach(true));
 
@@ -1305,11 +1271,6 @@ el('shock-form').addEventListener('submit', async (event) => {
         await refreshSimulation();
         scheduleBasket(0);
         const hit = shock.affected_tickers || [shock.ticker];
-        toast(
-            `${shock.scope === 'ticker' ? shock.ticker : `${hit.length} symbols`} · moved ${shock.bars_affected} sessions`,
-            shock.headline,
-            shock.sentiment > 0 ? 'bullish' : 'bearish',
-        );
     } catch (error) {
         errorBox.textContent = error.message;
         errorBox.classList.remove('hidden');
@@ -1347,15 +1308,12 @@ async function checkAI() {
 
 (async function start() {
     let savedTeacher = null;
-    let savedAlerts = null;
     let tourDone = null;
     try {
         savedTeacher = localStorage.getItem(TEACHER_KEY);
-        savedAlerts = localStorage.getItem(ALERTS_KEY);
         tourDone = localStorage.getItem(TOUR_KEY);
     } catch { /* private mode */ }
     setTeacherMode(savedTeacher === null ? true : savedTeacher === '1');
-    setAlerts(savedAlerts === null ? true : savedAlerts === '1');
 
     await loadCompanyNames();
     checkAI();

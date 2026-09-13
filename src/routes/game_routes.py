@@ -186,13 +186,18 @@ def bank_profiles():
 def start_session():
     body = request.get_json(silent=True) or {}
     salary = _optional_float(body.get("salary_amount"), "salary_amount")
+    initial_cash = _optional_float(body.get("initial_cash"), "initial_cash")
     if salary is not None and not math.isfinite(salary):
         raise GameError("salary_amount must be a number")
+    if initial_cash is not None and (not math.isfinite(initial_cash) or initial_cash < 0):
+        raise GameError("initial_cash must be a non-negative number")
     state = engine.start_session(
         tickers=body.get("tickers"),
         start_date=_parse_date(body.get("start_date"), "start_date"),
         end_date=_parse_date(body.get("end_date"), "end_date"),
         nessie_customer_id=body.get("nessie_customer_id"),
+        use_finances=body.get("use_finances", True) is not False,
+        initial_cash=None if initial_cash is None else Decimal(str(initial_cash)).quantize(Decimal("0.01")),
         simulate_future=bool(body.get("simulate_future")),
         horizon_days=_optional_int(body.get("horizon_days"), "horizon_days"),
         drift=_optional_float(body.get("drift"), "drift"),

@@ -94,7 +94,7 @@
                                 class="text-xs text-brand-soft transition hover:text-white">select all</button>
                         </div>
                         {% for row in members %}
-                        <label data-row data-terms="{{ row.ticker }} {{ row.company_name | lower }}"
+                        <label data-row data-terms="{{ row.ticker | lower }} {{ row.company_name | lower }}"
                             class="flex cursor-pointer items-center gap-3 border-b border-line/60 px-4 py-2.5 transition hover:bg-raised">
                             <input type="checkbox" name="tickers" value="{{ row.ticker }}"
                                 data-tech="{{ 'true' if row.is_tech else 'false' }}"
@@ -170,26 +170,45 @@
                 </div>
 
                 <div class="rounded-3xl border border-line bg-surface p-7">
-                    <h2 class="mb-1 text-xl font-semibold">4 &middot; Your bank</h2>
-                    <p class="mb-4 text-sm text-dim">
-                        You play as a customer of the Nessie sandbox bank. Their balance is your
-                        starting cash, and their bills are yours to pay.
-                    </p>
-                    <div id="bank-profiles" class="space-y-3">
-                        <p class="text-sm text-dim">Loading bank customers&hellip;</p>
+                    <div class="flex items-start justify-between gap-4">
+                        <div>
+                            <h2 class="mb-1 text-xl font-semibold">4 &middot; Finances (optional)</h2>
+                            <p class="mb-4 text-sm text-dim">
+                                Use the Nessie sandbox bank for income and bills, or run a pure stock
+                                simulation with a clean starting cash balance.
+                            </p>
+                        </div>
+                        <label class="flex shrink-0 cursor-pointer items-center gap-2 text-sm text-muted">
+                            <input type="checkbox" id="finances-on" class="tick h-5 w-5" checked>
+                            Nessie finances
+                        </label>
                     </div>
-                    <label class="mt-5 flex cursor-pointer items-start gap-3 border-t border-line pt-5">
-                        <input type="checkbox" id="salary-on" class="tick mt-1 h-5 w-5" checked>
-                        <span>
-                            <span class="block text-sm font-semibold">Get a paycheck every two weeks</span>
-                            <span class="block text-xs text-dim">Filled in from the customer's payroll deposits. Change it or switch it off.</span>
-                        </span>
-                    </label>
-                    <div class="mt-3 flex flex-wrap items-center gap-3">
-                        <span class="text-muted">$</span>
-                        <input type="number" id="salary-amount" step="any" value="0"
-                            class="w-40 rounded-xl border border-line-strong bg-ink px-4 py-3 tabular-nums text-white outline-none focus:border-brand disabled:opacity-40">
-                        <span id="salary-note" class="text-sm text-dim"></span>
+                    <div id="finance-settings">
+                        <div id="bank-profiles" class="space-y-3">
+                            <p class="text-sm text-dim">Loading bank customers&hellip;</p>
+                        </div>
+                        <label class="mt-5 flex cursor-pointer items-start gap-3 border-t border-line pt-5">
+                            <input type="checkbox" id="salary-on" class="tick mt-1 h-5 w-5" checked>
+                            <span>
+                                <span class="block text-sm font-semibold">Get a paycheck every two weeks</span>
+                                <span class="block text-xs text-dim">Filled in from the customer's payroll deposits. Change it or switch it off.</span>
+                            </span>
+                        </label>
+                        <div class="mt-3 flex flex-wrap items-center gap-3">
+                            <span class="text-muted">$</span>
+                            <input type="number" id="salary-amount" step="any" value="0"
+                                class="w-40 rounded-xl border border-line-strong bg-ink px-4 py-3 tabular-nums text-white outline-none focus:border-brand disabled:opacity-40">
+                            <span id="salary-note" class="text-sm text-dim"></span>
+                        </div>
+                    </div>
+                    <div id="pure-settings" class="hidden">
+                        <label class="block text-sm text-muted" for="initial-cash">Starting cash</label>
+                        <div class="mt-2 flex items-center gap-3">
+                            <span class="text-muted">$</span>
+                            <input type="number" id="initial-cash" min="0" step="100" value="10000"
+                                class="w-44 rounded-xl border border-line-strong bg-ink px-4 py-3 tabular-nums text-white outline-none focus:border-brand">
+                        </div>
+                        <p class="mt-3 text-xs text-dim">No Nessie API calls, paychecks, or bills will affect this run.</p>
                     </div>
                 </div>
 
@@ -198,7 +217,7 @@
                     Start trading
                 </button>
                 <p id="error" class="hidden rounded-xl border border-down/40 bg-down/10 p-4 text-down"></p>
-                <p class="text-sm text-dim">
+                <p id="funding-note" class="text-sm text-dim">
                     Starting cash, bills and paychecks come from the Nessie customer you pick
                     (<span class="font-mono">{{ funding_source }}</span>).
                 </p>
@@ -221,6 +240,11 @@
         const boxes = () => [...picker.querySelectorAll('input[type=checkbox]')];
         const selected = () => boxes().filter((box) => box.checked && !box.disabled);
         const bankList = document.getElementById('bank-profiles');
+        const financesOn = document.getElementById('finances-on');
+        const financeSettings = document.getElementById('finance-settings');
+        const pureSettings = document.getElementById('pure-settings');
+        const initialCash = document.getElementById('initial-cash');
+        const fundingNote = document.getElementById('funding-note');
         const salaryOn = document.getElementById('salary-on');
         const salaryAmount = document.getElementById('salary-amount');
         const salaryNote = document.getElementById('salary-note');
@@ -228,6 +252,7 @@
         const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         let bankProfiles = [];
         let bankChoice = null;
+        let bankLoadStarted = false;
 
         const chosenProfile = () => bankProfiles.find((profile) => profile.id === bankChoice) || null;
 
@@ -273,6 +298,8 @@
         }
 
         async function loadBank() {
+            if (bankLoadStarted) return;
+            bankLoadStarted = true;
             try {
                 const response = await fetch('/api/bank/profiles');
                 const data = await response.json();
@@ -286,6 +313,20 @@
             }
         }
 
+        function renderFinanceMode() {
+            const enabled = financesOn.checked;
+            financeSettings.classList.toggle('hidden', !enabled);
+            pureSettings.classList.toggle('hidden', enabled);
+            fundingNote.textContent = enabled
+                ? `Starting cash, bills and paychecks come from the Nessie customer you pick ({{ funding_source }}).`
+                : 'Pure stock simulation: only stock trades, price changes, and dividends affect this run.';
+            if (enabled) {
+                renderSalaryNote();
+                loadBank();
+            }
+        }
+
+        financesOn.addEventListener('change', renderFinanceMode);
         salaryOn.addEventListener('change', renderSalaryNote);
         salaryAmount.addEventListener('input', renderSalaryNote);
 
@@ -418,8 +459,10 @@
                         start_date: startInput.value,
                         end_date: endInput.value,
                         simulate_future: document.getElementById('simulate_future').checked,
-                        nessie_customer_id: bankChoice || undefined,
-                        salary_amount: salaryOn.checked ? Number(salaryAmount.value || 0) : 0,
+                        use_finances: financesOn.checked,
+                        nessie_customer_id: financesOn.checked ? (bankChoice || undefined) : undefined,
+                        salary_amount: financesOn.checked && salaryOn.checked ? Number(salaryAmount.value || 0) : 0,
+                        initial_cash: financesOn.checked ? undefined : Number(initialCash.value || 0),
                     }),
                 });
                 const data = await response.json();
@@ -443,7 +486,7 @@
             }
             render();
         })();
-        loadBank();
+        renderFinanceMode();
     </script>
 </body>
 

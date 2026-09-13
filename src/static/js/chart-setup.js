@@ -26,7 +26,13 @@ const SERIES_COLORS = [
 
 Chart.defaults.color = TICK;
 Chart.defaults.font.family = 'ui-sans-serif, system-ui, sans-serif';
-Chart.defaults.animation = false;
+// Chart.js animates every update; the default easing is long enough that a fast clock feels
+// laggy, so it is tuned down to a slide that keeps up with a day a second. Tune the shipped
+// animation object in place - do not replace it. The animator reads `fn`/`type`/`from`/`to`
+// off this object to pick an interpolator, and a replacement object missing those keys makes
+// every update throw "this._fn is not a function" and the chart stop repainting entirely.
+Chart.defaults.animation.duration = 320;
+Chart.defaults.animation.easing = 'easeOutCubic';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 

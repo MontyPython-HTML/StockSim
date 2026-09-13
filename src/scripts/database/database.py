@@ -94,7 +94,7 @@ def apply_schema() -> None:
 
 def upsert_prices(ticker: str, rows: Iterable[tuple]) -> int:
     sql = """
-        INSERT INTO stock_prices (ticker, ts, open, high, low, close, adj_close, volume)
+        INSERT INTO stock_prices (ticker, ts, open, high, low, close, adj_close, dividend, volume)
         VALUES %s
         ON CONFLICT (ticker, ts) DO UPDATE SET
             open = EXCLUDED.open,
@@ -102,6 +102,7 @@ def upsert_prices(ticker: str, rows: Iterable[tuple]) -> int:
             low = EXCLUDED.low,
             close = EXCLUDED.close,
             adj_close = EXCLUDED.adj_close,
+            dividend = EXCLUDED.dividend,
             volume = EXCLUDED.volume
     """
     rows = list(rows)
@@ -116,7 +117,7 @@ def fetch_price_history(ticker: str, start_date: date, end_date: date) -> pd.Dat
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT ts, open, high, low, close, adj_close, volume
+            SELECT ts, open, high, low, close, adj_close, dividend, volume
             FROM stock_prices
             WHERE ticker = %s AND ts BETWEEN %s AND %s
             ORDER BY ts
@@ -124,10 +125,10 @@ def fetch_price_history(ticker: str, start_date: date, end_date: date) -> pd.Dat
             (ticker.upper(), start_date, end_date),
         )
         rows = cur.fetchall()
-    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "adj_close", "volume"])
+    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "adj_close", "dividend", "volume"])
     if df.empty:
         return df
-    for col in ("open", "high", "low", "close", "adj_close"):
+    for col in ("open", "high", "low", "close", "adj_close", "dividend"):
         df[col] = df[col].astype(float)
     df["volume"] = df["volume"].astype("int64")
     return df
@@ -157,6 +158,7 @@ def create_session(
     nessie_account_id: str | None,
     user_label: str = "anonymous",
     salary_amount: Decimal = Decimal("0"),
+    finances_enabled: bool = True,
 ) -> dict:
     """Create the session row. The watchlist is written separately, by set_session_tickers."""
     with get_cursor() as cur:
@@ -164,9 +166,9 @@ def create_session(
             """
             INSERT INTO game_sessions (
                 id, user_label, start_date, end_date, sim_date,
-                starting_cash, cash_balance, nessie_customer_id, nessie_account_id, salary_amount
+                starting_cash, cash_balance, nessie_customer_id, nessie_account_id, salary_amount, finances_enabled
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
@@ -180,6 +182,7 @@ def create_session(
                 nessie_customer_id,
                 nessie_account_id,
                 salary_amount,
+                finances_enabled,
             ),
         )
         return cur.fetchone()
@@ -343,7 +346,11 @@ def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
                 (SELECT coalesce(json_agg(x), '[]'::json) FROM (
                     SELECT id, bill_id, kind, label, payee, due_date, amount, shortfall, cash_after
                     FROM session_expenses WHERE session_id = %(sid)s ORDER BY due_date, id
-                ) x) AS expenses
+                ) x) AS expenses,
+                (SELECT coalesce(json_agg(d), '[]'::json) FROM (
+                    SELECT ticker, ex_date, shares, per_share, amount, cash_after
+                    FROM dividend_payments WHERE session_id = %(sid)s ORDER BY ex_date, id
+                ) d) AS dividends
             """,
             {"sid": session_id, "limit": event_limit},
         )
@@ -464,6 +471,79 @@ def settle_cash_flows(session_id: str, flows: list[dict], prices_on, plan_sales)
                 (cash, session_id),
             )
         return applied, cash
+
+
+def settle_dividends(session_id: str, tickers: list[str], after: date, through: date) -> list[dict]:
+    """Credit declared dividends for shares held while the clock crossed the ex-date."""
+    if through <= after or not tickers:
+        return []
+    with get_transaction() as cur:
+        cur.execute("SELECT cash_balance FROM game_sessions WHERE id = %s FOR UPDATE", (session_id,))
+        row = cur.fetchone()
+        if not row:
+            return []
+        cash = row["cash_balance"]
+        cur.execute(
+            """
+            SELECT ticker, side, shares, trade_date
+            FROM transactions
+            WHERE session_id = %s AND ticker = ANY(%s::text[]) AND trade_date <= %s
+            ORDER BY trade_date, id
+            """,
+            (session_id, [ticker.upper() for ticker in tickers], through),
+        )
+        trades = cur.fetchall()
+        cur.execute(
+            """
+            SELECT ticker, ts AS ex_date, dividend
+            FROM stock_prices
+            WHERE ticker = ANY(%s::text[]) AND ts > %s AND ts <= %s AND dividend > 0
+            ORDER BY ts, ticker
+            """,
+            ([ticker.upper() for ticker in tickers], after, through),
+        )
+        declarations = cur.fetchall()
+        if not declarations:
+            return []
+        cur.execute(
+            "SELECT ticker, ex_date FROM dividend_payments WHERE session_id = %s AND ex_date > %s AND ex_date <= %s",
+            (session_id, after, through),
+        )
+        paid = {(row["ticker"], row["ex_date"]) for row in cur.fetchall()}
+        applied = []
+        for declaration in declarations:
+            ticker = declaration["ticker"]
+            ex_date = declaration["ex_date"]
+            # A player must own the shares before the ex-date. Rebuild the position at
+            # that date instead of using today's holdings; otherwise selling after the
+            # dividend would incorrectly erase a payment already earned, and buying after
+            # the ex-date would incorrectly receive it.
+            shares = sum(
+                (trade["shares"] if trade["side"] == "BUY" else -trade["shares"])
+                for trade in trades
+                if trade["ticker"] == ticker and trade["trade_date"] < ex_date
+            )
+            shares = max(Decimal("0"), shares)
+            if shares <= 0 or (ticker, ex_date) in paid:
+                continue
+            per_share = declaration["dividend"]
+            amount = (shares * per_share).quantize(Decimal("0.01"))
+            if amount <= 0:
+                continue
+            cash += amount
+            cur.execute(
+                """
+                INSERT INTO dividend_payments
+                    (session_id, ticker, ex_date, shares, per_share, amount, cash_after)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING ticker, ex_date, shares, per_share, amount, cash_after
+                """,
+                (session_id, ticker, ex_date, shares, per_share, amount, cash),
+            )
+            applied.append(cur.fetchone())
+        if applied:
+            cur.execute("UPDATE game_sessions SET cash_balance = %s, updated_at = now() WHERE id = %s", (cash, session_id))
+        return applied
 
 
 def list_expenses(session_id: str) -> list[dict]:
@@ -715,7 +795,7 @@ def fetch_simulated_prices(
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT ts, open, high, low, close, close AS adj_close, volume
+            SELECT ts, open, high, low, close, close AS adj_close, 0 AS dividend, volume
             FROM simulated_prices
             WHERE session_id = %s AND ticker = %s AND ts BETWEEN %s AND %s
             ORDER BY ts
@@ -723,10 +803,10 @@ def fetch_simulated_prices(
             (session_id, ticker.upper(), start_date, end_date),
         )
         rows = cur.fetchall()
-    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "adj_close", "volume"])
+    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "adj_close", "dividend", "volume"])
     if df.empty:
         return df
-    for col in ("open", "high", "low", "close", "adj_close"):
+    for col in ("open", "high", "low", "close", "adj_close", "dividend"):
         df[col] = df[col].astype(float)
     df["volume"] = df["volume"].astype("int64")
     return df

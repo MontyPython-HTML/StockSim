@@ -153,6 +153,8 @@ def bank_profiles() -> list[dict]:
 
 def bank_for(session: dict) -> dict:
     """The Nessie customer behind a session, their funding account and their employer."""
+    if not session.get("finances_enabled", True):
+        return {"customer": None, "account": None, "employer": None}
     session_id = str(session["id"])
     if session_id in _bank_cache:
         return _bank_cache[session_id]
@@ -180,6 +182,8 @@ def bank_for(session: dict) -> dict:
 
 def bills_for(session: dict) -> list[dict]:
     """The account's standing orders, normalised and cached per session."""
+    if not session.get("finances_enabled", True):
+        return []
     session_id = str(session["id"])
     if session_id in _bills_cache:
         return _bills_cache[session_id]
@@ -346,23 +350,25 @@ def summary(session: dict, sim_date: date, ledger: list[dict]) -> dict:
     net_burn = monthly_bills - monthly_income
     cash = float(session["cash_balance"])
     bill_rows = [row for row in ledger if (row.get("kind") or "bill") == "bill"]
+    finances_enabled = bool(session.get("finances_enabled", True))
     return {
-        "monthly_total": monthly_bills,
-        "bill_count": len(bills),
-        "paid_to_date": sum(float(row["amount"]) for row in bill_rows),
-        "missed_to_date": sum(float(row.get("shortfall") or 0) for row in bill_rows),
-        "earned_to_date": sum(float(row["amount"]) for row in ledger if row.get("kind") == "salary"),
+        "enabled": finances_enabled,
+        "monthly_total": monthly_bills if finances_enabled else 0,
+        "bill_count": len(bills) if finances_enabled else 0,
+        "paid_to_date": sum(float(row["amount"]) for row in bill_rows) if finances_enabled else 0,
+        "missed_to_date": sum(float(row.get("shortfall") or 0) for row in bill_rows) if finances_enabled else 0,
+        "earned_to_date": sum(float(row["amount"]) for row in ledger if row.get("kind") == "salary") if finances_enabled else 0,
         "paycheck": {
             "amount": paycheck,
             "every_days": PAY_INTERVAL_DAYS,
             "monthly": monthly_income,
             "employer": bank_for(session)["employer"],
         }
-        if paycheck > 0
+        if finances_enabled and paycheck > 0
         else None,
-        "net_monthly": round(monthly_income - monthly_bills, 2),
-        "upcoming": upcoming(session, sim_date),
+        "net_monthly": round(monthly_income - monthly_bills, 2) if finances_enabled else 0,
+        "upcoming": upcoming(session, sim_date) if finances_enabled else [],
         "overdrawn": cash < 0,
         # How long the cash on hand lasts once the paycheck is netted off the bills.
-        "months_of_runway": round(cash / net_burn, 1) if net_burn > 0 else None,
+        "months_of_runway": round(cash / net_burn, 1) if finances_enabled and net_burn > 0 else None,
     }
