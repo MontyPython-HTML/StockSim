@@ -2,9 +2,10 @@
 
 import json
 import threading
+import time
 from contextlib import contextmanager
-from datetime import date
-from decimal import Decimal
+from datetime import date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -17,31 +18,179 @@ import config
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
+# Rows per INSERT statement. A full history is over eleven thousand rows, and sending
+# that as one statement blows the server's per-message memory budget on a small instance.
+INSERT_PAGE_SIZE = 1000
+
+class DatabaseBusy(RuntimeError):
+    """No connection was free inside the wait budget. Retryable, and worth saying so.
+
+    Distinct from every other database error on purpose: callers are meant to catch this
+    one and answer "busy, try again" rather than 500, because nothing is broken - the
+    pool is simply full, and it will drain.
+    """
+
+
 _pool: ThreadedConnectionPool | None = None
 _pool_lock = threading.Lock()
+# Connections the pool opens itself (its minimum, at creation) are never seen by the
+# check-in hook, so "never seen" counts as "as old as the pool" - which is exactly when
+# they were dialled.
+_pool_created_at = 0.0
+# One permit per possible connection. psycopg2 hands out connections under a lock it holds
+# while it dials the server, so a burst of cold requests queues behind that lock with no
+# deadline and no way out. A permit with a timeout in front of it turns the same situation
+# into "we are at capacity, come back in a moment".
+_slots: threading.BoundedSemaphore | None = None
 
 
 def _get_pool() -> ThreadedConnectionPool:
-    global _pool
+    global _pool, _slots, _pool_created_at
     if _pool is None:
         with _pool_lock:
             if _pool is None:
-                _pool = ThreadedConnectionPool(1, 8, config.DATABASE_DSN)
+                # timeouts travel with the connection rather than the call site: a socket
+                # that never answers and a query that never returns are both ways to lose
+                # a connection for good.
+                _pool = ThreadedConnectionPool(
+                    config.DB_POOL_MIN,
+                    config.DB_POOL_MAX,
+                    config.DATABASE_DSN,
+                    connect_timeout=config.DB_CONNECT_TIMEOUT,
+                    application_name="stocksave",
+                    options=f"-c statement_timeout={config.DB_STATEMENT_TIMEOUT_MS}",
+                )
+                _slots = threading.BoundedSemaphore(config.DB_POOL_MAX)
+                _pool_created_at = time.monotonic()
     return _pool
+
+
+def _get_slots() -> threading.BoundedSemaphore:
+    _get_pool()
+    assert _slots is not None
+    return _slots
+
+
+def pool_status() -> dict:
+    """What the pool is holding, for the health endpoint and for error messages."""
+    pool = _get_pool()
+    in_use = len(getattr(pool, "_used", {}))
+    idle = len(getattr(pool, "_pool", []))
+    return {
+        "max": pool.maxconn,
+        "min": pool.minconn,
+        "in_use": in_use,
+        "idle": idle,
+        "wait_seconds": config.DB_POOL_WAIT_SECONDS,
+    }
+
+
+# When each pooled connection was last handed back, so idle ones can be tested before
+# they are trusted. Keyed by id(): pool connections live for the life of the process.
+_last_used: dict[int, float] = {}
+_last_used_lock = threading.Lock()
+
+
+def _stamp_returned(conn) -> None:
+    with _last_used_lock:
+        _last_used[id(conn)] = time.monotonic()
+
+
+def _idle_for(conn) -> float:
+    with _last_used_lock:
+        since = _last_used.get(id(conn), _pool_created_at)
+    return time.monotonic() - since
+
+
+def _is_alive(conn) -> bool:
+    """One cheap round trip, to find out whether a connection still exists."""
+    if conn.closed:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return True
+    except psycopg2.Error:
+        return False
+
+
+def _checkout(pool: ThreadedConnectionPool, *, autocommit: bool):
+    """A live connection from the pool, replacing one the server already hung up on.
+
+    A remote database drops idle connections (restarts, failovers, idle timeouts), and a
+    pooled connection that died is only discovered when a query is attempted on it - so
+    the failure lands on whoever clicks next, and looks like the game broke. Anything
+    that has been idle is pinged once here instead, which costs nothing on a busy pool
+    and hides the whole class of failure on a quiet one.
+    """
+    conn = pool.getconn()
+    _set_autocommit(conn, autocommit)
+    if not conn.closed and _idle_for(conn) <= config.DB_POOL_IDLE_PING_SECONDS:
+        return conn
+    if _is_alive(conn):
+        return conn
+    pool.putconn(conn, close=True)
+    conn = pool.getconn()
+    _set_autocommit(conn, autocommit)
+    if conn.closed:
+        pool.putconn(conn, close=True)
+        raise DatabaseBusy("the database refused every connection the pool offered")
+    return conn
+
+
+def _set_autocommit(conn, autocommit: bool) -> None:
+    """Switch mode on a freshly checked-out connection.
+
+    Has to happen before anything runs on it: psycopg2 refuses to change the session
+    while a transaction is open, which is exactly what a ping for liveness would leave
+    behind if this came after it.
+    """
+    if conn.autocommit != autocommit:
+        conn.autocommit = autocommit
+
+
+def _checkin(pool: ThreadedConnectionPool, conn) -> None:
+    """Hand a connection back, closing rather than pooling one that is already dead."""
+    try:
+        pool.putconn(conn, close=bool(conn.closed))
+    except Exception:  # noqa: BLE001 - a failed check-in must not mask the real error
+        pass
+    finally:
+        _stamp_returned(conn)
+
+
+@contextmanager
+def _connection(*, autocommit: bool):
+    """Check a connection out, hand it back, and never wait for one without a deadline."""
+    pool = _get_pool()
+    slots = _get_slots()
+    if not slots.acquire(timeout=config.DB_POOL_WAIT_SECONDS):
+        status = pool_status()
+        raise DatabaseBusy(
+            "All {max} database connections are busy ({in_use} in use). "
+            "Nothing is broken - retry in a moment.".format(**status)
+        )
+    conn = None
+    try:
+        conn = _checkout(pool, autocommit=autocommit)
+        yield conn
+    finally:
+        if conn is not None:
+            _checkin(pool, conn)
+        slots.release()
 
 
 @contextmanager
 def get_conn():
-    pool = _get_pool()
-    conn = pool.getconn()
-    try:
+    """An autocommit connection, i.e. one round trip per statement instead of two.
+
+    psycopg2 opens a transaction for every statement otherwise, and the commit that closes
+    it is a network round trip in its own right - against a remote database that was most
+    of the time a session took to start. Anything that must land as one unit takes
+    get_transaction() below instead.
+    """
+    with _connection(autocommit=True) as conn:
         yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        pool.putconn(conn)
 
 
 @contextmanager
@@ -51,9 +200,53 @@ def get_cursor(dict_rows: bool = True):
             yield cur
 
 
+@contextmanager
+def get_transaction(dict_rows: bool = True):
+    """A cursor inside one real transaction, for writes that must be all-or-nothing.
+
+    Batching several statements is exactly what autocommit connections cannot promise, so
+    the writers that touch more than one row set - a trade and the balance it moves, a
+    shock and the bars it reprices - come through here.
+    """
+    with _connection(autocommit=False) as conn:
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor if dict_rows else None) as cur:
+                yield cur
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            # Back to the pool's working default, even if the caller raised mid-transaction.
+            conn.autocommit = True
+
+
 def apply_schema() -> None:
+    # One multi-statement string: PostgreSQL runs it as a single implicit transaction.
     with get_cursor(dict_rows=False) as cur:
         cur.execute(SCHEMA_PATH.read_text())
+
+
+def warm_up() -> dict:
+    """Open the pool at boot, and prove the credentials work while nobody is waiting.
+
+    psycopg2 dials the server under the pool's own lock, so the request that happens to
+    arrive first pays for every connection behind it. Paying that at startup instead
+    means the first page load is not the slowest one of the day.
+    """
+    pool = _get_pool()
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+    return pool_status()
+
+
+def health() -> dict:
+    """Is the database answering, and how much of the pool is spoken for."""
+    with get_cursor() as cur:
+        cur.execute("SELECT 1 AS ok")
+        cur.fetchone()
+    return {"database": "ok", **pool_status()}
 
 
 # --- prices ---------------------------------------------------------------
@@ -61,7 +254,7 @@ def apply_schema() -> None:
 
 def upsert_prices(ticker: str, rows: Iterable[tuple]) -> int:
     sql = """
-        INSERT INTO stock_prices (ticker, ts, open, high, low, close, adj_close, volume)
+        INSERT INTO stock_prices (ticker, ts, open, high, low, close, adj_close, dividend, volume)
         VALUES %s
         ON CONFLICT (ticker, ts) DO UPDATE SET
             open = EXCLUDED.open,
@@ -69,21 +262,47 @@ def upsert_prices(ticker: str, rows: Iterable[tuple]) -> int:
             low = EXCLUDED.low,
             close = EXCLUDED.close,
             adj_close = EXCLUDED.adj_close,
+            dividend = EXCLUDED.dividend,
             volume = EXCLUDED.volume
     """
     rows = list(rows)
     if not rows:
         return 0
-    with get_cursor(dict_rows=False) as cur:
-        execute_values(cur, sql, rows)
+    with get_transaction(dict_rows=False) as cur:
+        execute_values(cur, sql, rows, page_size=INSERT_PAGE_SIZE)
     return len(rows)
+
+
+def update_dividends(ticker: str, rows: Iterable[tuple]) -> int:
+    """Set the cash dividend on price rows that already exist. Never inserts.
+
+    A dividend is declared on a day the stock trades, so the row it belongs to is always
+    there; an UPDATE rather than an upsert keeps a repair run from inventing a bar the
+    price ingest never wrote. Used by the dividend backfill, because databases loaded
+    before dividends were stored have 0 in every row and pay nothing forever.
+    """
+    rows = [(ticker.upper(), day, float(amount)) for day, amount in rows]
+    if not rows:
+        return 0
+    sql = """
+        UPDATE stock_prices AS p
+           SET dividend = v.dividend
+          FROM (VALUES %s) AS v(ticker, ts, dividend)
+         WHERE p.ticker = v.ticker AND p.ts = v.ts::date
+        RETURNING p.ts
+    """
+    updated = 0
+    with get_transaction(dict_rows=False) as cur:
+        for page in (rows[i:i + INSERT_PAGE_SIZE] for i in range(0, len(rows), INSERT_PAGE_SIZE)):
+            updated += len(execute_values(cur, sql, page, page_size=INSERT_PAGE_SIZE, fetch=True))
+    return updated
 
 
 def fetch_price_history(ticker: str, start_date: date, end_date: date) -> pd.DataFrame:
     with get_cursor() as cur:
         cur.execute(
             """
-            SELECT ts, open, high, low, close, adj_close, volume
+            SELECT ts, open, high, low, close, adj_close, dividend, volume
             FROM stock_prices
             WHERE ticker = %s AND ts BETWEEN %s AND %s
             ORDER BY ts
@@ -91,10 +310,10 @@ def fetch_price_history(ticker: str, start_date: date, end_date: date) -> pd.Dat
             (ticker.upper(), start_date, end_date),
         )
         rows = cur.fetchall()
-    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "adj_close", "volume"])
+    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "adj_close", "dividend", "volume"])
     if df.empty:
         return df
-    for col in ("open", "high", "low", "close", "adj_close"):
+    for col in ("open", "high", "low", "close", "adj_close", "dividend"):
         df[col] = df[col].astype(float)
     df["volume"] = df["volume"].astype("int64")
     return df
@@ -111,23 +330,11 @@ def fetch_date_bounds(ticker: str) -> dict | None:
     return row if row and row["row_count"] else None
 
 
-def available_tickers() -> list[dict]:
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            SELECT ticker, min(ts) AS first_day, max(ts) AS last_day, count(*) AS row_count
-            FROM stock_prices GROUP BY ticker ORDER BY ticker
-            """
-        )
-        return cur.fetchall()
-
-
 # --- sessions -------------------------------------------------------------
 
 
 def create_session(
     session_id: str,
-    ticker: str,
     start_date: date,
     end_date: date,
     sim_date: date,
@@ -135,21 +342,25 @@ def create_session(
     nessie_customer_id: str | None,
     nessie_account_id: str | None,
     user_label: str = "anonymous",
+    salary_amount: Decimal = Decimal("0"),
+    finances_enabled: bool = True,
+    reinvest_dividends: bool = False,
 ) -> dict:
+    """Create the session row. The watchlist is written separately, by set_session_tickers."""
     with get_cursor() as cur:
         cur.execute(
             """
             INSERT INTO game_sessions (
-                id, user_label, ticker, start_date, end_date, sim_date,
-                starting_cash, cash_balance, nessie_customer_id, nessie_account_id
+                id, user_label, start_date, end_date, sim_date,
+                starting_cash, cash_balance, nessie_customer_id, nessie_account_id, salary_amount,
+                finances_enabled, reinvest_dividends
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
             (
                 session_id,
                 user_label,
-                ticker.upper(),
                 start_date,
                 end_date,
                 sim_date,
@@ -157,9 +368,35 @@ def create_session(
                 starting_cash,
                 nessie_customer_id,
                 nessie_account_id,
+                salary_amount,
+                finances_enabled,
+                reinvest_dividends,
             ),
         )
         return cur.fetchone()
+
+
+def set_session_tickers(session_id: str, tickers: Iterable[str]) -> int:
+    """Replace a session's watchlist, preserving the given order as the display order."""
+    rows = [(session_id, ticker.upper(), index) for index, ticker in enumerate(tickers)]
+    with get_transaction(dict_rows=False) as cur:
+        cur.execute("DELETE FROM session_tickers WHERE session_id = %s", (session_id,))
+        if rows:
+            execute_values(
+                cur,
+                "INSERT INTO session_tickers (session_id, ticker, sort_order) VALUES %s",
+                rows,
+            )
+    return len(rows)
+
+
+def session_tickers(session_id: str) -> list[str]:
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT ticker FROM session_tickers WHERE session_id = %s ORDER BY sort_order, ticker",
+            (session_id,),
+        )
+        return [row["ticker"] for row in cur.fetchall()]
 
 
 def get_session(session_id: str) -> dict | None:
@@ -205,13 +442,349 @@ def record_trade(
 ) -> dict:
     """Cash, holdings and the trade log all move together or not at all."""
     ticker = ticker.upper()
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    with get_transaction() as cur:
+        cur.execute(
+            "UPDATE game_sessions SET cash_balance = %s, updated_at = now() WHERE id = %s",
+            (new_cash, session_id),
+        )
+        if new_shares > 0:
+            cur.execute(
+                """
+                INSERT INTO portfolio_holdings (session_id, ticker, shares, avg_cost)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (session_id, ticker) DO UPDATE SET
+                    shares = EXCLUDED.shares,
+                    avg_cost = EXCLUDED.avg_cost,
+                    updated_at = now()
+                """,
+                (session_id, ticker, new_shares, new_avg_cost),
+            )
+        else:
+            cur.execute(
+                "DELETE FROM portfolio_holdings WHERE session_id = %s AND ticker = %s",
+                (session_id, ticker),
+            )
+        cur.execute(
+            """
+            INSERT INTO transactions
+                (session_id, ticker, trade_date, side, shares, price, cash_after)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (session_id, ticker, trade_date, side, shares, price, new_cash),
+        )
+        return cur.fetchone()
+
+
+def _as_date(value) -> date:
+    """ISO string (from JSON) or date/datetime (from the driver) -> date."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return datetime.strptime(str(value), "%Y-%m-%d").date()
+
+
+def _revive_dates(bundle: dict) -> dict:
+    """Put the DATE columns back to `date` after the JSON trip.
+
+    The bundle's whole point is one query instead of five, and row_to_json/json_agg are
+    what buy that - at the cost of column types: dates arrive as ISO strings. Restoring
+    them here keeps "sim_date is a date" true for every reader, rather than requiring
+    each one to remember to parse it (a date comparison against a string raises
+    TypeError, so forgetting 500s the whole tick).
+    """
+    session = bundle.get("session") or {}
+    for field in ("start_date", "end_date", "sim_date"):
+        if session.get(field):
+            session[field] = _as_date(session[field])
+    for event in bundle.get("events") or []:
+        event["sim_date"] = _as_date(event["sim_date"])
+    for trade in bundle.get("trades") or []:
+        trade["trade_date"] = _as_date(trade["trade_date"])
+    return bundle
+
+
+def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
+    """Session, watchlist, holdings, trades and AI events in one round trip.
+
+    The database is remote, so collapsing these five reads into a single query is worth
+    the SQL - it is the difference between a ~600ms and a ~150ms game tick.
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                (SELECT row_to_json(s) FROM game_sessions s WHERE s.id = %(sid)s) AS session,
+                (SELECT coalesce(json_agg(st.ticker ORDER BY st.sort_order, st.ticker), '[]'::json)
+                 FROM session_tickers st WHERE st.session_id = %(sid)s) AS watchlist,
+                (SELECT coalesce(json_agg(h), '[]'::json) FROM (
+                    SELECT ticker, shares, avg_cost FROM portfolio_holdings
+                    WHERE session_id = %(sid)s AND shares > 0 ORDER BY ticker
+                ) h) AS holdings,
+                (SELECT coalesce(json_agg(t), '[]'::json) FROM (
+                    SELECT id, ticker, trade_date, side, shares, price, cash_after, forced, reinvested
+                    FROM transactions WHERE session_id = %(sid)s ORDER BY trade_date, id
+                ) t) AS trades,
+                (SELECT coalesce(json_agg(e), '[]'::json) FROM (
+                    SELECT id, event_type, ticker, sim_date, payload, created_at
+                    FROM mcp_events WHERE session_id = %(sid)s
+                    ORDER BY created_at DESC, id DESC LIMIT %(limit)s
+                ) e) AS events,
+                (SELECT coalesce(json_agg(x), '[]'::json) FROM (
+                    SELECT id, bill_id, kind, label, payee, due_date, amount, shortfall, cash_after
+                    FROM session_expenses WHERE session_id = %(sid)s ORDER BY due_date, id
+                ) x) AS expenses,
+                (SELECT coalesce(json_agg(d), '[]'::json) FROM (
+                    SELECT ticker, ex_date, shares, per_share, amount, cash_after,
+                           reinvested_shares, reinvest_price
+                    FROM dividend_payments WHERE session_id = %(sid)s ORDER BY ex_date, id
+                ) d) AS dividends
+            """,
+            {"sid": session_id, "limit": event_limit},
+        )
+        return _revive_dates(cur.fetchone())
+
+
+# --- standing orders ------------------------------------------------------
+
+
+def settle_cash_flows(session_id: str, flows: list[dict], prices_on, plan_sales) -> tuple[list[dict], Decimal]:
+    """Pay bills and bank paychecks in date order, in one transaction, never below zero cash.
+
+    The session and its holdings are row-locked, so a concurrent tick cannot settle the same
+    day twice and (session_id, bill_id, due_date) rows already on the ledger are skipped. A
+    bill the cash cannot cover sells shares first - `plan_sales(holdings, prices, needed)`
+    picks them and `prices_on(day)` prices them - and whatever is still owed after that is
+    stored as the bill's shortfall.
+    """
+    cent = Decimal("0.01")
+    with get_transaction() as cur:
+        cur.execute("SELECT cash_balance FROM game_sessions WHERE id = %s FOR UPDATE", (session_id,))
+        row = cur.fetchone()
+        if row is None:
+            return [], Decimal("0")
+        cash = row["cash_balance"]
+
+        cur.execute(
+            "SELECT ticker, shares FROM portfolio_holdings "
+            "WHERE session_id = %s AND shares > 0 FOR UPDATE",
+            (session_id,),
+        )
+        holdings = {held["ticker"]: held["shares"] for held in cur.fetchall()}
+
+        cur.execute(
+            "SELECT bill_id, due_date FROM session_expenses "
+            "WHERE session_id = %s AND due_date = ANY(%s::date[])",
+            (session_id, sorted({flow["due_date"] for flow in flows})),
+        )
+        settled = {(done["bill_id"], done["due_date"]) for done in cur.fetchall()}
+
+        applied: list[dict] = []
+        sold_tickers: set[str] = set()
+        for flow in flows:
+            if (flow["bill_id"], flow["due_date"]) in settled:
+                continue
+            amount = Decimal(str(flow["amount"])).quantize(cent)
+            sold: list[dict] = []
+
+            if flow["kind"] == "salary":
+                cash += amount
+                paid = amount
+            else:
+                if cash < amount and holdings:
+                    quotes = prices_on(flow["due_date"])
+                    prices = {ticker: quote["price"] for ticker, quote in quotes.items()}
+                    for ticker, shares in plan_sales(holdings, prices, amount - cash):
+                        price = prices[ticker]
+                        cash += (shares * price).quantize(cent)
+                        holdings[ticker] -= shares
+                        if holdings[ticker] <= 0:
+                            del holdings[ticker]
+                        sold_tickers.add(ticker)
+                        cur.execute(
+                            """
+                            INSERT INTO transactions
+                                (session_id, ticker, trade_date, side, shares, price, cash_after, forced)
+                            VALUES (%s, %s, %s, 'SELL', %s, %s, %s, TRUE)
+                            """,
+                            (session_id, ticker, quotes[ticker]["date"], shares, price, cash),
+                        )
+                        sold.append(
+                            {
+                                "ticker": ticker,
+                                "shares": float(shares),
+                                "price": float(price),
+                                "date": quotes[ticker]["date"].isoformat(),
+                            }
+                        )
+                paid = max(Decimal("0"), min(amount, cash))
+                cash -= paid
+
+            cur.execute(
+                """
+                INSERT INTO session_expenses
+                    (session_id, bill_id, kind, label, payee, due_date, amount, shortfall, cash_after)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, bill_id, kind, label, payee, due_date, amount, shortfall, cash_after
+                """,
+                (
+                    session_id,
+                    flow["bill_id"],
+                    flow["kind"],
+                    flow["label"],
+                    flow.get("payee"),
+                    flow["due_date"],
+                    paid,
+                    amount - paid,
+                    cash,
+                ),
+            )
+            applied.append({**cur.fetchone(), "sold": sold})
+
+        for ticker in sold_tickers:
+            if ticker in holdings:
+                cur.execute(
+                    "UPDATE portfolio_holdings SET shares = %s, updated_at = now() "
+                    "WHERE session_id = %s AND ticker = %s",
+                    (holdings[ticker], session_id, ticker),
+                )
+            else:
+                cur.execute(
+                    "DELETE FROM portfolio_holdings WHERE session_id = %s AND ticker = %s",
+                    (session_id, ticker),
+                )
+        if applied:
             cur.execute(
                 "UPDATE game_sessions SET cash_balance = %s, updated_at = now() WHERE id = %s",
-                (new_cash, session_id),
+                (cash, session_id),
             )
-            if new_shares > 0:
+        return applied, cash
+
+
+def upcoming_dividends(tickers: list[str], after: date, within_days: int = 120) -> list[dict]:
+    """The next declared ex-dates for each symbol, after `after`.
+
+    Read straight off the real price history - a declared dividend is a fact about the bar
+    it sits on, so "what is coming" is a range scan over rows the database already holds.
+    Simulated futures carry no declarations, which is why the caller filters anything that
+    falls past a session's fork date.
+    """
+    symbols = sorted({ticker.upper() for ticker in tickers if ticker})
+    if not symbols:
+        return []
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (ticker) ticker, ts AS ex_date, dividend, close
+              FROM stock_prices
+             WHERE ticker = ANY(%s::text[])
+               AND ts > %s AND ts <= %s
+               AND dividend > 0
+             ORDER BY ticker, ts
+            """,
+            (symbols, after, after + timedelta(days=within_days)),
+        )
+        return cur.fetchall()
+
+
+def settle_dividends(session_id: str, tickers: list[str], after: date, through: date) -> list[dict]:
+    """Pay declared dividends for shares held while the clock crossed the ex-date.
+
+    Cash by default; into more shares when the session has reinvestment switched on. Both
+    are the same dividend - one arrives as money, the other as stock - so the payment row
+    is written either way and the trade ledger gets a purchase only in the second case.
+    """
+    if through <= after or not tickers:
+        return []
+    cent = Decimal("0.01")
+    with get_transaction() as cur:
+        cur.execute(
+            "SELECT cash_balance, reinvest_dividends FROM game_sessions WHERE id = %s FOR UPDATE",
+            (session_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return []
+        cash = row["cash_balance"]
+        reinvest = bool(row.get("reinvest_dividends"))
+        cur.execute(
+            """
+            SELECT ticker, side, shares, trade_date
+            FROM transactions
+            WHERE session_id = %s AND ticker = ANY(%s::text[]) AND trade_date <= %s
+            ORDER BY trade_date, id
+            """,
+            (session_id, [ticker.upper() for ticker in tickers], through),
+        )
+        trades = cur.fetchall()
+        cur.execute(
+            """
+            SELECT ticker, ts AS ex_date, dividend, close
+            FROM stock_prices
+            WHERE ticker = ANY(%s::text[]) AND ts > %s AND ts <= %s AND dividend > 0
+            ORDER BY ts, ticker
+            """,
+            ([ticker.upper() for ticker in tickers], after, through),
+        )
+        declarations = cur.fetchall()
+        if not declarations:
+            return []
+        # Reinvestment buys shares, so the position has to be read and written as one: two
+        # payouts on the same day must land on a cost basis that knows about the first.
+        positions: dict[str, dict] = {}
+        if reinvest:
+            cur.execute(
+                "SELECT ticker, shares, avg_cost FROM portfolio_holdings "
+                "WHERE session_id = %s AND shares > 0 FOR UPDATE",
+                (session_id,),
+            )
+            positions = {held["ticker"]: dict(held) for held in cur.fetchall()}
+        cur.execute(
+            "SELECT ticker, ex_date FROM dividend_payments WHERE session_id = %s AND ex_date > %s AND ex_date <= %s",
+            (session_id, after, through),
+        )
+        paid = {(row["ticker"], row["ex_date"]) for row in cur.fetchall()}
+        applied = []
+        for declaration in declarations:
+            ticker = declaration["ticker"]
+            ex_date = declaration["ex_date"]
+            # A player must own the shares before the ex-date. Rebuild the position at
+            # that date instead of using today's holdings; otherwise selling after the
+            # dividend would incorrectly erase a payment already earned, and buying after
+            # the ex-date would incorrectly receive it.
+            shares = sum(
+                (trade["shares"] if trade["side"] == "BUY" else -trade["shares"])
+                for trade in trades
+                if trade["ticker"] == ticker and trade["trade_date"] < ex_date
+            )
+            shares = max(Decimal("0"), shares)
+            if shares <= 0 or (ticker, ex_date) in paid:
+                continue
+            per_share = declaration["dividend"]
+            amount = (shares * per_share).quantize(cent)
+            if amount <= 0:
+                continue
+
+            reinvested_shares = Decimal("0")
+            reinvest_price = None
+            close = declaration.get("close")
+            price = Decimal(str(close)).quantize(Decimal("0.0001")) if close else Decimal("0")
+            if reinvest and price > 0:
+                # Fractional shares: a payout is never a round number of shares, and the
+                # money has to go somewhere. The payment is exactly what was declared, so
+                # what the shares cost and what they are worth stay in step.
+                reinvested_shares = (amount / price).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+                reinvest_price = price
+                position = positions.get(ticker)
+                held_shares = Decimal(str(position["shares"])) if position else Decimal("0")
+                held_cost = Decimal(str(position["avg_cost"])) if position else Decimal("0")
+                total = held_shares + reinvested_shares
+                avg_cost = ((held_shares * held_cost) + amount) / total if total > 0 else price
+                positions[ticker] = {
+                    "shares": total,
+                    "avg_cost": avg_cost.quantize(Decimal("0.0001")),
+                }
                 cur.execute(
                     """
                     INSERT INTO portfolio_holdings (session_id, ticker, shares, avg_cost)
@@ -221,53 +794,57 @@ def record_trade(
                         avg_cost = EXCLUDED.avg_cost,
                         updated_at = now()
                     """,
-                    (session_id, ticker, new_shares, new_avg_cost),
+                    (session_id, ticker, total, positions[ticker]["avg_cost"]),
+                )
+                # In the trade ledger as a purchase, because that is what it is: the
+                # position and the ledger have to agree, and the next dividend is paid on
+                # whatever the ledger says. Flagged so the page can call it a payout.
+                cur.execute(
+                    """
+                    INSERT INTO transactions
+                        (session_id, ticker, trade_date, side, shares, price, cash_after, reinvested)
+                    VALUES (%s, %s, %s, 'BUY', %s, %s, %s, TRUE)
+                    """,
+                    (session_id, ticker, ex_date, reinvested_shares, reinvest_price, cash),
                 )
             else:
-                cur.execute(
-                    "DELETE FROM portfolio_holdings WHERE session_id = %s AND ticker = %s",
-                    (session_id, ticker),
-                )
+                cash += amount
+
             cur.execute(
                 """
-                INSERT INTO transactions
-                    (session_id, ticker, trade_date, side, shares, price, cash_after)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING *
+                INSERT INTO dividend_payments
+                    (session_id, ticker, ex_date, shares, per_share, amount, cash_after,
+                     reinvested_shares, reinvest_price)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING ticker, ex_date, shares, per_share, amount, cash_after,
+                          reinvested_shares, reinvest_price
                 """,
-                (session_id, ticker, trade_date, side, shares, price, new_cash),
+                (
+                    session_id,
+                    ticker,
+                    ex_date,
+                    shares,
+                    per_share,
+                    amount,
+                    cash,
+                    reinvested_shares,
+                    reinvest_price,
+                ),
             )
-            return cur.fetchone()
+            applied.append({**cur.fetchone(), "reinvested": bool(reinvest_price)})
+        if applied:
+            cur.execute("UPDATE game_sessions SET cash_balance = %s, updated_at = now() WHERE id = %s", (cash, session_id))
+        return applied
 
 
-def load_session_bundle(session_id: str, event_limit: int = 30) -> dict:
-    """Session, holdings, trades and AI events in one round trip.
-
-    The database is remote, so collapsing these four reads into a single query is worth
-    the SQL - it is the difference between a ~600ms and a ~150ms game tick.
-    """
+def list_expenses(session_id: str) -> list[dict]:
     with get_cursor() as cur:
         cur.execute(
-            """
-            SELECT
-                (SELECT row_to_json(s) FROM game_sessions s WHERE s.id = %(sid)s) AS session,
-                (SELECT coalesce(json_agg(h), '[]'::json) FROM (
-                    SELECT ticker, shares, avg_cost FROM portfolio_holdings
-                    WHERE session_id = %(sid)s AND shares > 0 ORDER BY ticker
-                ) h) AS holdings,
-                (SELECT coalesce(json_agg(t), '[]'::json) FROM (
-                    SELECT id, ticker, trade_date, side, shares, price, cash_after
-                    FROM transactions WHERE session_id = %(sid)s ORDER BY trade_date, id
-                ) t) AS trades,
-                (SELECT coalesce(json_agg(e), '[]'::json) FROM (
-                    SELECT id, event_type, ticker, sim_date, payload, created_at
-                    FROM mcp_events WHERE session_id = %(sid)s
-                    ORDER BY created_at DESC, id DESC LIMIT %(limit)s
-                ) e) AS events
-            """,
-            {"sid": session_id, "limit": event_limit},
+            "SELECT id, bill_id, label, payee, due_date, amount, cash_after "
+            "FROM session_expenses WHERE session_id = %s ORDER BY due_date, id",
+            (session_id,),
         )
-        return cur.fetchone()
+        return cur.fetchall()
 
 
 # --- MCP event log --------------------------------------------------------
@@ -285,5 +862,383 @@ def insert_mcp_event(
             (session_id, event_type, ticker.upper(), sim_date, json.dumps(payload)),
         )
         return cur.fetchone()["id"]
+
+
+def update_mcp_event_payload(event_id: int, payload: dict) -> None:
+    """Rewrite an event's payload in place.
+
+    Shocks are logged before they are applied (the bars need the event id), so the
+    "how far did it actually reach" numbers are written back a moment later.
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            "UPDATE mcp_events SET payload = %s::jsonb WHERE id = %s",
+            (json.dumps(payload), event_id),
+        )
+
+
+# --- ticker universe ------------------------------------------------------
+
+
+def upsert_tickers(rows: Iterable[tuple]) -> int:
+    """Seed/refresh the ticker catalog. Rows are (ticker, name, sector, universe, is_tech)."""
+    sql = """
+        INSERT INTO tickers (ticker, company_name, sector, universe, is_tech)
+        VALUES %s
+        ON CONFLICT (ticker) DO UPDATE SET
+            company_name = EXCLUDED.company_name,
+            sector = EXCLUDED.sector,
+            universe = EXCLUDED.universe,
+            is_tech = EXCLUDED.is_tech
+    """
+    rows = list(rows)
+    if not rows:
+        return 0
+    with get_transaction(dict_rows=False) as cur:
+        execute_values(cur, sql, rows)
+    return len(rows)
+
+
+def list_universe(universe: str | None = None, tech_only: bool = False) -> list[dict]:
+    """Catalog of known symbols, left-joined with the history we actually have.
+
+    A NULL first_day means "known ticker, nothing ingested yet" - the UI uses that to
+    show the difference between an empty universe and a broken one.
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+    if universe:
+        clauses.append("t.universe = %s")
+        params.append(universe)
+    if tech_only:
+        clauses.append("t.is_tech")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with get_cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT t.ticker, t.company_name, t.sector, t.universe, t.is_tech,
+                   p.first_day, p.last_day, coalesce(p.row_count, 0) AS row_count,
+                   (p.row_count IS NOT NULL) AS has_data
+            FROM tickers t
+            LEFT JOIN (
+                SELECT ticker, min(ts) AS first_day, max(ts) AS last_day, count(*) AS row_count
+                FROM stock_prices GROUP BY ticker
+            ) p ON p.ticker = t.ticker
+            {where}
+            ORDER BY t.ticker
+            """,
+            tuple(params),
+        )
+        return cur.fetchall()
+
+
+def ticker_sectors(tickers: Iterable[str] | None = None) -> dict[str, dict]:
+    """Sector (and tech flag) per symbol, as a lookup.
+
+    A sector-wide headline has to know which of a session's symbols share a sector, and
+    one small read of the catalog is cheaper than a query per symbol per event.
+    """
+    wanted = [ticker.upper() for ticker in tickers] if tickers else None
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT ticker, sector, is_tech
+            FROM tickers
+            WHERE (%s::text[] IS NULL OR ticker = ANY(%s::text[]))
+            """,
+            (wanted, wanted),
+        )
+        return {
+            row["ticker"]: {"sector": row["sector"] or "", "is_tech": bool(row["is_tech"])}
+            for row in cur.fetchall()
+        }
+
+
+def company_names(tickers: Iterable[str]) -> dict[str, str]:
+    wanted = [ticker.upper() for ticker in tickers]
+    if not wanted:
+        return {}
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT ticker, company_name FROM tickers WHERE ticker = ANY(%s::text[])",
+            (wanted,),
+        )
+        return {row["ticker"]: row["company_name"] for row in cur.fetchall()}
+
+
+def universe_stats() -> dict:
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*) AS known,
+                   count(*) FILTER (WHERE coalesce(p.row_count, 0) > 0) AS ingested,
+                   count(*) FILTER (WHERE t.is_tech) AS tech
+            FROM tickers t
+            LEFT JOIN (
+                SELECT ticker, count(*) AS row_count FROM stock_prices GROUP BY ticker
+            ) p ON p.ticker = t.ticker
+            """
+        )
+        return cur.fetchone()
+
+
+# --- per-user simulated future --------------------------------------------
+
+_SIMULATION_COLUMNS = (
+    "ticker",
+    "fork_date",
+    "anchor_price",
+    "horizon_days",
+    "drift",
+    "volatility",
+    "mean_reversion",
+    "generator",
+    "seed",
+    "last_generated",
+)
+
+
+def create_simulation(session_id: str, **fields: Any) -> dict:
+    unknown = set(fields) - set(_SIMULATION_COLUMNS)
+    if unknown:
+        raise ValueError(f"unknown simulation field(s): {sorted(unknown)}")
+    fields["ticker"] = str(fields["ticker"]).upper()
+    columns = ", ".join(fields)
+    placeholders = ", ".join("%s" for _ in fields)
+    with get_cursor() as cur:
+        cur.execute(
+            f"""
+            INSERT INTO user_simulations (session_id, {columns})
+            VALUES (%s, {placeholders})
+            ON CONFLICT (session_id, ticker) DO UPDATE SET
+                {', '.join(f'{name} = EXCLUDED.{name}' for name in fields)},
+                updated_at = now()
+            RETURNING *
+            """,
+            (session_id, *fields.values()),
+        )
+        return cur.fetchone()
+
+
+def get_simulation(session_id: str, ticker: str) -> dict | None:
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT * FROM user_simulations WHERE session_id = %s AND ticker = %s",
+            (session_id, ticker.upper()),
+        )
+        return cur.fetchone()
+
+
+def get_simulations(session_id: str) -> list[dict]:
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT * FROM user_simulations WHERE session_id = %s ORDER BY ticker",
+            (session_id,),
+        )
+        return cur.fetchall()
+
+
+def update_simulation(session_id: str, ticker: str, **fields: Any) -> dict | None:
+    unknown = set(fields) - set(_SIMULATION_COLUMNS)
+    if unknown:
+        raise ValueError(f"unknown simulation field(s): {sorted(unknown)}")
+    if not fields:
+        return get_simulation(session_id, ticker)
+    assignments = ", ".join(f"{name} = %s" for name in fields)
+    with get_cursor() as cur:
+        cur.execute(
+            f"UPDATE user_simulations SET {assignments}, updated_at = now() "
+            "WHERE session_id = %s AND ticker = %s RETURNING *",
+            (*fields.values(), session_id, ticker.upper()),
+        )
+        return cur.fetchone()
+
+
+
+
+def upsert_simulated_prices(session_id: str, ticker: str, rows: Iterable[tuple]) -> int:
+    """Rows are (ts, open, high, low, close, volume, event_id)."""
+    sql = """
+        INSERT INTO simulated_prices
+            (session_id, ticker, ts, open, high, low, close, volume, event_id)
+        VALUES %s
+        ON CONFLICT (session_id, ticker, ts) DO UPDATE SET
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            volume = EXCLUDED.volume,
+            event_id = coalesce(EXCLUDED.event_id, simulated_prices.event_id)
+    """
+    rows = list(rows)
+    if not rows:
+        return 0
+    payload = [(session_id, ticker.upper(), *row) for row in rows]
+    with get_transaction(dict_rows=False) as cur:
+        execute_values(cur, sql, payload, page_size=INSERT_PAGE_SIZE)
+    return len(payload)
+
+
+def fetch_simulated_prices(
+    session_id: str, ticker: str, start_date: date, end_date: date
+) -> pd.DataFrame:
+    """Same column shape as fetch_price_history so the two frames can be concatenated."""
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT ts, open, high, low, close, close AS adj_close, 0 AS dividend, volume
+            FROM simulated_prices
+            WHERE session_id = %s AND ticker = %s AND ts BETWEEN %s AND %s
+            ORDER BY ts
+            """,
+            (session_id, ticker.upper(), start_date, end_date),
+        )
+        rows = cur.fetchall()
+    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "adj_close", "dividend", "volume"])
+    if df.empty:
+        return df
+    for col in ("open", "high", "low", "close", "adj_close", "dividend"):
+        df[col] = df[col].astype(float)
+    df["volume"] = df["volume"].astype("int64")
+    return df
+
+
+def rescale_simulated_prices(session_id: str, ticker: str, updates: Iterable[tuple]) -> int:
+    """Rewrite already-generated bars after a shock.
+
+    updates are (open, high, low, close, volume, event_id, ts); a NULL event_id leaves
+    whatever tag the bar already carried, so a second shock never un-attributes the first.
+    """
+    updates = list(updates)
+    if not updates:
+        return 0
+    # One statement, not one per bar. `executemany` sends each row as its own round trip,
+    # which against a remote database made a single 252-bar shock take about seventeen
+    # seconds; a VALUES list is paged the same way the insert path already is.
+    sql = """
+        UPDATE simulated_prices AS target
+        SET open = batch.open,
+            high = batch.high,
+            low = batch.low,
+            close = batch.close,
+            volume = batch.volume,
+            event_id = coalesce(batch.event_id, target.event_id)
+        FROM (VALUES %s) AS batch (session_id, ticker, ts, open, high, low, close, volume, event_id)
+        WHERE target.session_id = batch.session_id
+          AND target.ticker = batch.ticker
+          AND target.ts = batch.ts
+    """
+    # The casts are not decoration: a batch whose event_id is all NULLs would otherwise be
+    # inferred as text, and coalesce(text, bigint) is a type error rather than a shrug.
+    template = "(%s::uuid, %s, %s::date, %s, %s, %s, %s, %s, %s::bigint)"
+    payload = [
+        (session_id, ticker.upper(), ts, o, h, low, c, v, event)
+        for o, h, low, c, v, event, ts in updates
+    ]
+    # Every row is a *multiplier* on the bar it replaces, so this is the one write that
+    # genuinely has to be all-or-nothing: a half-applied shock cannot be re-run.
+    with get_transaction(dict_rows=False) as cur:
+        execute_values(cur, sql, payload, template=template, page_size=INSERT_PAGE_SIZE)
+    return len(payload)
+
+
+def latest_quotes(session_id: str, tickers: list[str], as_of: date) -> dict[str, dict]:
+    """Last close (and the one before it) for each symbol at or before a date.
+
+    One index-driven LATERAL lookup per symbol instead of loading a full price frame for
+    each: the game needs two numbers for every symbol on every tick, and building an
+    eleven-thousand-row frame per symbol just to read its tail was the slowest part of
+    the request. Simulated bars are unioned in so a forked session reads them seamlessly.
+    """
+    tickers = [ticker.upper() for ticker in tickers]
+    if not tickers:
+        return {}
+
+    # Which source a symbol answers from depends on the session, not just the date. A
+    # forked symbol reads its generated bars from the fork onward; the real series must be
+    # cut off there, because the catalog now holds real history past any fork and taking
+    # the newest row across both would quote a real 2025 close for a chart that is drawing
+    # generated prices - the player would trade at a price they cannot see.
+    #
+    # Each branch is its own ORDER BY ... LIMIT 1 so Postgres walks the (ticker, ts DESC)
+    # index backwards and stops after one row; written as a single UNION with an outer sort
+    # it would read every bar up to as_of for every symbol instead.
+    latest = """
+        SELECT * FROM (
+            (SELECT ts, close, FALSE AS simulated FROM stock_prices
+             WHERE ticker = t.ticker
+               AND ts <= LEAST(%(as_of)s::date, coalesce(us.fork_date, %(as_of)s::date))
+             ORDER BY ts DESC LIMIT 1)
+            UNION ALL
+            (SELECT ts, close, TRUE AS simulated FROM simulated_prices
+             WHERE session_id = %(session_id)s AND ticker = t.ticker
+               AND ts <= %(as_of)s::date
+             ORDER BY ts DESC LIMIT 1)
+        ) s ORDER BY ts DESC LIMIT 1
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT t.ticker, last.ts, last.close, last.simulated, prev.close AS previous_close
+            FROM unnest(%(tickers)s::text[]) AS t(ticker)
+            LEFT JOIN user_simulations us
+                   ON us.session_id = %(session_id)s AND us.ticker = t.ticker
+            CROSS JOIN LATERAL ({latest}) last
+            LEFT JOIN LATERAL (
+                SELECT close FROM (
+                    (SELECT ts, close FROM stock_prices
+                     WHERE ticker = t.ticker AND ts < last.ts
+                       AND ts <= LEAST(%(as_of)s::date,
+                                       coalesce(us.fork_date, %(as_of)s::date))
+                     ORDER BY ts DESC LIMIT 1)
+                    UNION ALL
+                    (SELECT ts, close FROM simulated_prices
+                     WHERE session_id = %(session_id)s AND ticker = t.ticker
+                       AND ts < last.ts
+                     ORDER BY ts DESC LIMIT 1)
+                ) p ORDER BY p.ts DESC LIMIT 1
+            ) prev ON TRUE
+            """,
+            {"tickers": tickers, "session_id": session_id, "as_of": as_of},
+        )
+        rows = cur.fetchall()
+
+    quotes: dict[str, dict] = {}
+    for row in rows:
+        close = float(row["close"])
+        previous = row["previous_close"]
+        previous = float(previous) if previous is not None else None
+        quotes[row["ticker"]] = {
+            "close": close,
+            "previous_close": previous,
+            "change_pct": None if not previous else (close - previous) / previous * 100,
+            "simulated": bool(row["simulated"]),
+            "date": row["ts"].isoformat(),
+        }
+    return quotes
+
+
+def simulated_shock_log(session_id: str, ticker: str | None = None, limit: int = 20) -> list[dict]:
+    """Every event that touched a generated future, newest first.
+
+    One row per event (not per bar) with the window it repriced - a single headline
+    bends dozens of bars, and listing those individually is noise.
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT e.id AS event_id, e.ticker, e.payload,
+                   min(s.ts) AS first_bar, max(s.ts) AS last_bar,
+                   count(*) AS bars, min(s.close) AS low_close, max(s.close) AS high_close
+            FROM simulated_prices s
+            JOIN mcp_events e ON e.id = s.event_id
+            WHERE s.session_id = %s AND (%s IS NULL OR s.ticker = %s)
+            GROUP BY e.id, e.ticker, e.payload
+            ORDER BY first_bar DESC
+            LIMIT %s
+            """,
+            (session_id, ticker.upper() if ticker else None, ticker.upper() if ticker else None, limit),
+        )
+        return cur.fetchall()
 
 

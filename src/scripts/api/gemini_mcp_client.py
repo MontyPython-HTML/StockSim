@@ -21,6 +21,20 @@ class MCPUnavailable(RuntimeError):
     pass
 
 
+# What the API surfaces to the player instead of a stack trace. Anything the MCP server
+# reports as an `error` is already a sentence meant for a human, so it is passed through
+# with a hint about where to fix it.
+NO_KEY_HINT = "No Gemini API key is configured, so the AI coach is switched off."
+KEY_FIX_HINT = "Add GEMINI_API_KEY to hackrice/.env (see .env.example) and restart the app."
+
+
+def friendly_error(exc: BaseException) -> str:
+    message = str(exc) or type(exc).__name__
+    if "GEMINI_API_KEY" in message:
+        return f"{NO_KEY_HINT} {KEY_FIX_HINT}"
+    return f"The AI coach is unavailable: {message}"
+
+
 class MCPClientThread:
     def __init__(self) -> None:
         self.alive = False
@@ -152,6 +166,7 @@ def _call_and_log(tool: str, event_type: str, session_id: str, ticker: str, as_o
 
 
 def predict(session_id: str, ticker: str, as_of: date) -> dict | None:
+    """Background variant: never raises, because nothing is waiting on the result."""
     try:
         return _call_and_log("predict_next_move", "PREDICTION", session_id, ticker, as_of)
     except Exception as exc:
@@ -159,9 +174,105 @@ def predict(session_id: str, ticker: str, as_of: date) -> dict | None:
         return None
 
 
+def predict_or_raise(session_id: str, ticker: str, as_of: date) -> dict:
+    """Interactive variant for the "Ask for a read" button.
+
+    Unlike predict(), a failure here has a player staring at it, so the reason travels
+    back to the UI instead of being swallowed into a log line.
+    """
+    client = get_client()
+    payload = client.call_tool(
+        "predict_next_move",
+        {"session_id": session_id, "ticker": ticker, "as_of_date": as_of.isoformat()},
+    )
+    if payload.get("error"):
+        raise MCPUnavailable(str(payload["error"]))
+    client.call_tool(
+        "log_ai_event",
+        {
+            "session_id": session_id,
+            "ticker": ticker,
+            "sim_date": as_of.isoformat(),
+            "event_type": "PREDICTION",
+            "payload": payload,
+        },
+    )
+    return payload
+
+
+def pattern_lesson(
+    session_id: str,
+    ticker: str,
+    as_of: date,
+    pattern: str,
+    signal: str = "",
+    context: dict | None = None,
+) -> dict | None:
+    """A lesson on one chart pattern. Logged by the caller, not here.
+
+    `pattern` is a syllabus name; the MCP server refuses anything it does not recognise,
+    so a typo becomes a clear error rather than an invented lesson. `signal` is the
+    detector's own wording for what fired and `context` is the indicator reading at that
+    moment, which is what lets the lesson quote the player's own numbers.
+    """
+    try:
+        client = get_client()
+        payload = client.call_tool(
+            "explain_pattern",
+            {
+                "session_id": session_id,
+                "ticker": ticker,
+                "as_of_date": as_of.isoformat(),
+                "pattern": pattern,
+                "signal": signal,
+            },
+        )
+        return None if payload.get("error") else payload
+    except Exception as exc:
+        log.warning("MCP pattern lesson unavailable: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+def probe() -> tuple[bool, str]:
+    """Is the MCP subprocess actually reachable? Used by the status endpoint."""
+    try:
+        get_client()
+        return True, "MCP server is running"
+    except Exception as exc:
+        return False, friendly_error(exc)
+
+
 def market_event(session_id: str, ticker: str, as_of: date) -> dict | None:
     try:
         return _call_and_log("generate_market_event", "NEWS_EVENT", session_id, ticker, as_of)
     except Exception as exc:
         log.warning("MCP market event unavailable: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+def market_shock(
+    session_id: str, ticker: str, as_of: date, scope: str = "ticker"
+) -> dict | None:
+    """A sized event for the simulated future. Logged by the caller, not here: the
+    shock has to be applied to the bars first so the event row can record how far it
+    reached.
+
+    `scope` travels with the request because it changes what the model is asked to
+    invent: a company story and a sector story are different prompts. The tool resolves
+    the sector itself from the catalog and the session's watchlist.
+    """
+    try:
+        client = get_client()
+        payload = client.call_tool(
+            "generate_market_shock",
+            {
+                "session_id": session_id,
+                "ticker": ticker,
+                "as_of_date": as_of.isoformat(),
+                "scope": scope,
+            },
+        )
+        return None if payload.get("error") else payload
+    except Exception as exc:
+        log.warning("MCP market shock unavailable: %s: %s", type(exc).__name__, exc)
         return None

@@ -53,5 +53,150 @@
       "account_number": "1000000000000003",
       "customer_id": "mock-customer-002"
     }
-  ]
+  ],
+  "bills": [
+    {
+      "_id": "mock-bill-001",
+      "status": "recurring",
+      "payee": "Sunrise Apartments",
+      "nickname": "Rent",
+      "payment_date": "2024-01-01",
+      "recurring_date": 1,
+      "upcoming_payment_date": "2024-01-01",
+      "payment_amount": 1450.0,
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-bill-002",
+      "status": "recurring",
+      "payee": "City Power & Light",
+      "nickname": "Utilities",
+      "payment_date": "2024-01-01",
+      "recurring_date": 5,
+      "upcoming_payment_date": "2024-01-01",
+      "payment_amount": 180.0,
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-bill-003",
+      "status": "recurring",
+      "payee": "Onyx Auto Finance",
+      "nickname": "Car payment",
+      "payment_date": "2024-01-01",
+      "recurring_date": 8,
+      "upcoming_payment_date": "2024-01-01",
+      "payment_amount": 395.0,
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-bill-004",
+      "status": "recurring",
+      "payee": "Northwind Health",
+      "nickname": "Health insurance",
+      "payment_date": "2024-01-01",
+      "recurring_date": 12,
+      "upcoming_payment_date": "2024-01-01",
+      "payment_amount": 320.0,
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-bill-005",
+      "status": "recurring",
+      "payee": "Fiber Collective",
+      "nickname": "Internet",
+      "payment_date": "2024-01-01",
+      "recurring_date": 15,
+      "upcoming_payment_date": "2024-01-01",
+      "payment_amount": 75.0,
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-bill-006",
+      "status": "recurring",
+      "payee": "Streamline Media",
+      "nickname": "Streaming",
+      "payment_date": "2024-01-01",
+      "recurring_date": 18,
+      "upcoming_payment_date": "2024-01-01",
+      "payment_amount": 24.0,
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-bill-007",
+      "status": "recurring",
+      "payee": "Kettle & Co Gym",
+      "nickname": "Gym",
+      "payment_date": "2024-01-01",
+      "recurring_date": 22,
+      "upcoming_payment_date": "2024-01-01",
+      "payment_amount": 45.0,
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-bill-008",
+      "status": "recurring",
+      "payee": "Sable Student Loans",
+      "nickname": "Student loan",
+      "payment_date": "2024-01-01",
+      "recurring_date": 25,
+      "upcoming_payment_date": "2024-01-01",
+      "payment_amount": 280.0,
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-bill-101",
+      "status": "recurring",
+      "payee": "Campus Housing",
+      "nickname": "Rent",
+      "payment_date": "2024-01-01",
+      "recurring_date": 1,
+      "upcoming_payment_date": "2024-01-01",
+      "payment_amount": 600.0,
+      "account_id": "mock-account-003"
+    },
+    {
+      "_id": "mock-bill-102",
+      "status": "recurring",
+      "payee": "Streamline Media",
+      "nickname": "Streaming",
+      "payment_date": "2024-01-01",
+      "recurring_date": 18,
+      "upcoming_payment_date": "2024-01-01",
+      "payment_amount": 24.0,
+      "account_id": "mock-account-003"
+    }
+  ],
+  "deposits": [
+    {
+      "_id": "mock-deposit-001",
+      "type": "deposit",
+      "transaction_date": "2024-01-05",
+      "status": "completed",
+      "medium": "balance",
+      "amount": 2100.0,
+      "description": "Payroll - Northwind Logistics",
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-deposit-002",
+      "type": "deposit",
+      "transaction_date": "2024-01-19",
+      "status": "completed",
+      "medium": "balance",
+      "amount": 2100.0,
+      "description": "Payroll - Northwind Logistics",
+      "account_id": "mock-account-001"
+    },
+    {
+      "_id": "mock-deposit-101",
+      "type": "deposit",
+      "transaction_date": "2024-01-12",
+      "status": "completed",
+      "medium": "balance",
+      "amount": 450.0,
+      "description": "Payroll - Campus Bookstore",
+      "account_id": "mock-account-003"
+    }
+  ],
+  "purchases": []
 }

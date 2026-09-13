@@ -66,11 +66,93 @@ def generate_market_event(session_id: str, ticker: str, as_of_date: str) -> dict
 
 
 @mcp.tool()
+def generate_market_shock(
+    session_id: str, ticker: str, as_of_date: str, scope: str = "ticker"
+) -> dict:
+    """A fictional, sized market event for the player's simulated future.
+
+    Unlike generate_market_event, the result carries decay_days so the caller can apply
+    the shock to the generated price series rather than just display the headline.
+
+    `scope` is "ticker", "sector" or "market", and decides how the prompt is framed: a
+    sector story has to be written to move every name the student holds in that sector,
+    which the tool works out from the session's own watchlist and the ticker catalog.
+    """
+    as_of = _parse(as_of_date)
+    ticker = ticker.upper()
+    scope = (scope or "ticker").strip().lower()
+    if scope not in ("ticker", "sector", "market"):
+        return {"error": f"unknown scope {scope!r}; expected ticker, sector or market"}
+
+    frame = _grounding_frame(ticker, as_of)
+    if frame.empty:
+        return {"error": f"no stored history for {ticker} through {as_of_date}"}
+
+    watchlist = database.session_tickers(session_id) or [ticker]
+    sectors = database.ticker_sectors(watchlist)
+    sector = sectors.get(ticker, {}).get("sector") or None
+    try:
+        shock = gemini_tools.generate_market_shock(
+            ticker, as_of, frame, scope=scope, sector=sector, peers=watchlist
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+    shock["session_id"] = session_id
+    return shock
+
+
+@mcp.tool()
+def explain_pattern(
+    session_id: str,
+    ticker: str,
+    as_of_date: str,
+    pattern: str,
+    signal: str = "",
+) -> dict:
+    """Teach the chart pattern behind a signal that just fired on the player's chart.
+
+    `pattern` is a pattern name from the local syllabus (see scripts/game/patterns.py), not
+    free text: the curriculum decides *what* gets taught and in what order, and this tool
+    only decides how well it is explained. An unrecognised name is refused rather than
+    passed to the model, which would otherwise happily invent a lesson for it.
+    """
+    from scripts.game import patterns
+
+    entry = patterns.lesson_for(pattern) or patterns.by_slug(pattern)
+    if entry is None:
+        known = ", ".join(candidate.name for candidate in patterns.PATTERNS)
+        return {"error": f"unknown pattern {pattern!r}; expected one of: {known}"}
+
+    as_of = _parse(as_of_date)
+    frame = _grounding_frame(ticker.upper(), as_of)
+    if frame.empty:
+        return {"error": f"no stored history for {ticker} through {as_of_date}"}
+
+    context = indicators.latest_row_summary(frame)
+    reference = {
+        "slug": entry.slug,
+        "name": entry.name,
+        "family": entry.family,
+        "tension": entry.tension,
+        **entry.lesson(),
+    }
+    try:
+        lesson = gemini_tools.generate_pattern_lesson(
+            ticker.upper(), as_of, frame, reference, signal or entry.name, context
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+    lesson["session_id"] = session_id
+    lesson["context"] = context
+    return lesson
+
+
+@mcp.tool()
 def log_ai_event(
     session_id: str, ticker: str, sim_date: str, event_type: str, payload: dict
 ) -> dict:
-    #Persist a prediction or news event into TigerData mcp_events log
-    #event_type must be PREDICTION or NEWS_EVENT
+    #Persist a prediction, news event, market shock or pattern lesson into mcp_events.
+    #event_type must be one the mcp_events check constraint allows.
     
     event_id = database.insert_mcp_event(
         session_id=session_id,

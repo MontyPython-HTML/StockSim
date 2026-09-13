@@ -129,14 +129,24 @@ def detect_signals(df: pd.DataFrame) -> list[dict]:
     return signals
 
 
+def _number(value) -> float | None:
+    """NaN out, null in.
+
+    A bar before an indicator has warmed up carries NaN, and NaN is not valid JSON - it
+    serialises to a bare `NaN` token that makes the browser's JSON.parse throw and the
+    page die with nothing shown. Starting a run on a symbol's listing day is enough to
+    hit this, so every number that leaves here goes through one guard.
+    """
+    return None if value is None or pd.isna(value) else float(value)
+
+
 def latest_row_summary(df: pd.DataFrame) -> dict:
     if df.empty:
         return {}
     row = df.iloc[-1]
 
     def value(column: str) -> float | None:
-        raw = row.get(column)
-        return None if raw is None or pd.isna(raw) else float(raw)
+        return _number(row.get(column))
 
     return {
         "date": row["ts"].isoformat(),
@@ -144,7 +154,7 @@ def latest_row_summary(df: pd.DataFrame) -> dict:
         "high": value("high"),
         "low": value("low"),
         "close": value("close"),
-        "volume": int(row["volume"]),
+        "volume": _number(row["volume"]),
         "sma20": value("sma20"),
         "sma50": value("sma50"),
         "rsi14": value("rsi14"),
@@ -158,18 +168,17 @@ def latest_row_summary(df: pd.DataFrame) -> dict:
 def to_series(df: pd.DataFrame) -> list[dict]:
     if df.empty:
         return []
-    frame = df.where(pd.notna(df), None)
     return [
         {
             "date": row["ts"].isoformat(),
-            "close": float(row["close"]),
-            "volume": int(row["volume"]),
-            "sma20": None if row["sma20"] is None else float(row["sma20"]),
-            "sma50": None if row["sma50"] is None else float(row["sma50"]),
-            "rsi14": None if row["rsi14"] is None else float(row["rsi14"]),
-            "macd": None if row["macd"] is None else float(row["macd"]),
-            "macd_signal": None if row["macd_signal"] is None else float(row["macd_signal"]),
-            "macd_hist": None if row["macd_hist"] is None else float(row["macd_hist"]),
+            "close": _number(row["close"]),
+            "volume": _number(row["volume"]),
+            "sma20": _number(row["sma20"]),
+            "sma50": _number(row["sma50"]),
+            "rsi14": _number(row["rsi14"]),
+            "macd": _number(row["macd"]),
+            "macd_signal": _number(row["macd_signal"]),
+            "macd_hist": _number(row["macd_hist"]),
         }
-        for _, row in frame.iterrows()
+        for _, row in df.iterrows()
     ]
