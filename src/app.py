@@ -12,6 +12,7 @@ import config
 from routes.game_routes import api
 from scripts.api import nessie
 from scripts.database import database
+from scripts.game import levels
 from scripts.game.engine import GameError
 
 base_dir = os.path.abspath(os.path.dirname(__file__))
@@ -117,6 +118,7 @@ def home():
         stats=stats,
         max_watchlist=config.MAX_WATCHLIST,
         funding_source=nessie.source_label(),
+        levels=levels.catalog(),
     )
 
 

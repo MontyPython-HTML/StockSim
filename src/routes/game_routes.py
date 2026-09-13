@@ -9,8 +9,9 @@ from werkzeug.exceptions import HTTPException
 import config
 from scripts.api import gemini_mcp_client, nessie
 from scripts.database import database
-from scripts.game import engine, events, expenses, performance, price_source
+from scripts.game import engine, events, expenses, levels, news, performance, price_source
 from scripts.game.engine import AIUnavailable, GameError
+from scripts.ingestion import descriptions
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -153,13 +154,14 @@ def universe():
     ingest away, not an error.
     """
     tech_only = request.args.get("tech_only", "").lower() in ("1", "true", "yes")
+    rows = database.list_universe(universe=request.args.get("universe") or None, tech_only=tech_only)
+    for row in rows:
+        row["description"] = descriptions.describe(row["ticker"], row["company_name"], row["sector"])
     return jsonify(
         {
             "universe": request.args.get("universe") or None,
             "stats": database.universe_stats(),
-            "tickers": database.list_universe(
-                universe=request.args.get("universe") or None, tech_only=tech_only
-            ),
+            "tickers": rows,
         }
     )
 
@@ -238,6 +240,31 @@ def start_session():
     return jsonify(state), 201
 
 
+@api.get("/levels")
+def level_catalog():
+    return jsonify({"levels": levels.catalog()})
+
+
+@api.post("/levels/<int:number>/start")
+def start_level(number: int):
+    body = request.get_json(silent=True) or {}
+    return jsonify(engine.start_level(number, seed=_optional_int(body.get("seed"), "seed"))), 201
+
+
+@api.get("/session/<session_id>/news")
+def session_news(session_id: str):
+    """One day's Daily Ledger, for any trading day the session has already played."""
+    bundle = database.load_session_bundle(session_id)
+    session = bundle["session"]
+    if not session:
+        raise GameError("Session not found")
+    if not levels.shows(levels.get(session.get("level")), "news"):
+        raise GameError("The Daily Ledger is not part of this level.")
+    day = _parse_date(request.args["date"], "date") if request.args.get("date") else None
+    sources = price_source.for_watchlist(session, bundle.get("watchlist"))
+    return jsonify(news.edition(session, _as_date(session["sim_date"]), day, bundle["events"], sources))
+
+
 @api.get("/session/<session_id>/state")
 def session_state(session_id: str):
     return jsonify(
@@ -309,6 +336,18 @@ def advance(session_id: str):
             days=_day_count(body.get("days")),
             with_ai=body.get("with_ai", True),
             focus=_focus_argument(body),
+        )
+    )
+
+
+@api.get("/session/<session_id>/lookahead")
+def session_lookahead(session_id: str):
+    after = request.args.get("after")
+    return jsonify(
+        engine.lookahead(
+            session_id,
+            after=_parse_date(after, "after") if after else None,
+            days=_day_count(request.args.get("days")),
         )
     )
 

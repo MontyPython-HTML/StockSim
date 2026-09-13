@@ -47,6 +47,8 @@ let latestState = null;
 let latestSimulation = null;
 let focus = null;
 let companyNames = {};
+// The full catalog rows, not just the names: the hover card needs the sector and the blurb.
+let companyInfo = {};
 const BASKET_REFRESH_MS = 500;
 let basketTimer = null;
 let basketInFlight = false;
@@ -57,10 +59,6 @@ let basketSignature = null;
 // A running clock does not: the next advance response already carries the whole feed.
 const FEED_REFRESH_MS = 5000;
 let feedTimer = null;
-
-// How soon after a tick the window for the next one is asked for. It is not on the tick's
-// critical path - the next tick is a whole second away and this answer takes a tenth of one.
-const AHEAD_REFRESH_MS = 0;
 
 // Teacher mode: the lesson a tick queues arrives seconds later on a worker thread, so the
 // page stops the clock immediately, opens the card in a waiting state, and polls until the
@@ -116,7 +114,7 @@ function renderWatchlist(state) {
         button.innerHTML = `
             <span>
                 <span class="block font-mono text-lg font-semibold">${quote.ticker}</span>
-                <span class="block text-xs text-dim">${companyNames[quote.ticker] || ''}</span>
+                <span class="block cursor-help text-xs text-dim" data-stock-tip="${esc(quote.ticker)}">${companyNames[quote.ticker] || ''}</span>
             </span>
             <span class="text-right">
                 <span class="block tabular-nums">${money(quote.close)}</span>
@@ -166,7 +164,7 @@ function renderHoldings(state) {
         row.className = 'rounded-xl border border-line bg-ink-soft p-3';
         row.innerHTML = `
             <div class="flex items-baseline justify-between gap-2">
-                <button type="button" class="focus-chip font-mono font-semibold transition hover:text-glow">${position.ticker}</button>
+                <button type="button" class="focus-chip font-mono font-semibold transition hover:text-glow" data-stock-tip="${esc(position.ticker)}">${position.ticker}</button>
                 <span class="text-sm tabular-nums text-muted">${Number(position.shares).toLocaleString()} sh</span>
             </div>
             <div class="mt-1 flex items-baseline justify-between gap-2">
@@ -193,8 +191,13 @@ function renderBills(state) {
 
     const overdrawn = state.portfolio.overdrawn;
     el('overdrawn-banner').classList.toggle('hidden', !overdrawn);
-    el('bills-panel').className = `rounded-3xl border p-6 ${
-        overdrawn ? 'border-down/50 bg-down/5' : 'border-line bg-surface'}`;
+    // Only the tone classes are swapped. Assigning className would wipe the `hidden` a level
+    // puts on a panel it is not teaching, since both write to the same attribute.
+    const panel = el('bills-panel');
+    panel.classList.toggle('border-down/50', overdrawn);
+    panel.classList.toggle('bg-down/5', overdrawn);
+    panel.classList.toggle('border-line', !overdrawn);
+    panel.classList.toggle('bg-surface', !overdrawn);
 
     const runway = el('bills-runway');
     // Months of runway is the number that should change how much gets invested, so it is
@@ -553,6 +556,9 @@ function renderBasketNote(payload) {
 function render(state) {
     latestState = state;
     focus = state.focus;
+    // Runs once per session: a level switches off the panels it is not teaching before
+    // anything is drawn, so the first paint already has the right ones showing.
+    applyLevel(state);
     el('sim-date').textContent = state.sim_date;
 
     const simulated = state.simulation && state.simulation.mode === 'simulated';
@@ -584,12 +590,11 @@ function render(state) {
     renderBills(state);
     renderBank(state);
     updateCharts(charts, state);
+    refreshStockTip();
     renderFeed(state.ai_feed);
     renderNews(state);
     renderPatterns(state.patterns);
-    // Every path that can change the chart's focus or date comes through here, so this is the
-    // one place that has to know the next window is now stale.
-    if (timer) scheduleAhead();
+    renderLevel(state);
 
     if (state.status === 'finished') finish(state);
 }
@@ -901,57 +906,6 @@ function scheduleFeedRefresh(delay = FEED_REFRESH_MS) {
     }, delay);
 }
 
-// --- the day ahead ---------------------------------------------------------
-//
-// A chart's slide lasts the whole tick, so a tick that only learns its prices when the
-// advance request returns spends the front half of that interval standing still: the curve
-// then covers the same ground in what is left, and by the time it arrives the window it is
-// showing belongs to the date the header has already left behind. Prices are the one thing
-// here the player cannot influence - the calendar decides them - so tomorrow's window is
-// fetched while today plays out, and the slide starts the moment the tick does.
-
-let aheadChart = null;
-let aheadInFlight = false;
-let aheadTimer = null;
-
-function scheduleAhead(delay = AHEAD_REFRESH_MS) {
-    if (aheadTimer !== null) return;
-    aheadTimer = setTimeout(() => {
-        aheadTimer = null;
-        refreshAhead();
-    }, delay);
-}
-
-async function refreshAhead() {
-    // Only while the charts are gliding: stopped, or at a speed that steps whole days at a
-    // time, nothing is waiting on it and a preview would only be a request.
-    if (!timer || aheadInFlight || !chartAnimates()) return;
-    aheadInFlight = true;
-    try {
-        const payload = await call(`/api/session/${sessionId}/ahead?focus=${focus}`);
-        // A finished session, or a focus the server did not recognise, comes back empty.
-        aheadChart = payload.chart && payload.chart.length ? payload : null;
-    } catch (error) {
-        // An optimisation that cannot fail the clock: without it the tick simply reads its
-        // prices from the advance response, as it did before.
-        aheadChart = null;
-        console.error(error);
-    } finally {
-        aheadInFlight = false;
-    }
-}
-
-// Start the charts moving on the window this tick is about to reach. The advance response
-// that follows carries exactly these dates, so the update it triggers finds nothing to draw
-// and the early start is confirmed rather than corrected.
-function panAhead() {
-    const ahead = aheadChart;
-    aheadChart = null;
-    if (!ahead || !latestState || ahead.focus !== focus) return;
-    if (!(ahead.sim_date > latestState.sim_date)) return;
-    updateCharts(charts, { ...latestState, chart: ahead.chart });
-}
-
 async function advance(days = 1) {
     if (inFlight) return;
     inFlight = true;
@@ -1014,18 +968,12 @@ function play() {
     const tick = async () => {
         if (!timer) return;
         const started = performance.now();
-        // Tomorrow's prices are already in hand, so the charts start moving on this tick
-        // rather than on whatever the request below takes to come back.
-        panAhead();
         await advance(speed.days);
         if (!timer) return;
         const spent = performance.now() - started;
         timer = setTimeout(tick, Math.max(0, speed.ms - spent));
     };
     timer = setTimeout(tick, speed.ms);
-    // The charts ease their slide across the gap between ticks, so they move at the same rate
-    // the clock is running instead of hopping once per tick.
-    setChartCadence(speed.ms);
     el('play-btn').textContent = 'Pause';
     el('play-btn').className = PLAYING;
     setStatus('Playing', true);
@@ -1034,13 +982,6 @@ function play() {
 function pause() {
     clearTimeout(timer);
     timer = null;
-    // Stopped, a step is a single deliberate move, so the charts go back to the short ease.
-    setChartCadence(0);
-    // The clock is no longer moving on its own, so a window fetched for the next tick has
-    // nothing left to start: the next render after a step asks for a fresh one.
-    aheadChart = null;
-    clearTimeout(aheadTimer);
-    aheadTimer = null;
     el('play-btn').textContent = 'Play';
     el('play-btn').className = PRIMARY;
     setStatus('Paused', false);
@@ -1057,6 +998,38 @@ function finish(state) {
     summary.className = `mb-3 text-6xl font-bold tabular-nums ${toneFor(total)}`;
     el('summary-net').textContent = money(state.portfolio.net_worth);
     el('summary-start').textContent = money(state.portfolio.starting_cash);
+
+    // A level ending is graded rather than just totalled: the stars, the rule that was not
+    // met, and the trades it was judged on.
+    const level = state.level;
+    if (level) {
+        recordLevel(level);
+        el('summary-card').classList.remove('max-w-lg');
+        el('summary-card').classList.add('max-w-2xl');
+        for (const id of ['summary-level', 'summary-stars', 'summary-replay']) {
+            el(id).classList.remove('hidden');
+        }
+        el('summary-next').classList.toggle('hidden', !(level.passed && level.next_level));
+        el('summary-title').textContent = `Level ${level.number} ${level.passed ? 'passed' : 'complete'}`;
+        el('summary-stars').textContent = starText(level.stars);
+        const follow = level.goals.find((goal) => goal.id === 'follow');
+        const pass = el('summary-pass');
+        pass.textContent = !level.passed
+            ? `Not passed yet. To unlock the next level: ${(follow?.label || 'follow the rule').toLowerCase()}.`
+            : level.next_level
+                ? `Level ${level.next_level} is unlocked.`
+                : "That was the last level. You're ready for the full game.";
+        pass.className = `mb-5 rounded-2xl border p-4 text-center text-sm ${
+            level.passed ? 'border-up/40 bg-up/10 text-up' : 'border-warn/40 bg-warn/10 text-warn'}`;
+        el('summary-goals').innerHTML = goalItems(level.goals);
+        el('summary-trades').innerHTML = level.trades.length
+            ? level.trades.map(reviewRow).join('')
+            : '<p class="text-dim">No trades this time.</p>';
+        const finale = level.passed && !level.next_level;
+        el('summary-link').textContent = finale ? 'Start the full game' : 'All levels';
+        el('summary-link').href = finale ? '/' : '/#levels';
+    }
+
     const overlay = el('summary-overlay');
     overlay.classList.remove('hidden');
     overlay.classList.add('flex');
@@ -1235,6 +1208,228 @@ function noteLessons(feed) {
     fillCoach(fresh);
 }
 
+// --- training levels ------------------------------------------------------
+//
+// A level is a short run over real history that hands the player one tool at a time. The
+// session carries the level, so the server decides what a level contains and this side only
+// decides how it looks: which panels are on, and how each trade scores against its rule.
+
+const LEVELS_KEY = 'tradingTeacher.levels';
+let levelApplied = false;
+
+// Which panels this run shows. A session with no level shows all of them.
+function shows(state, panel) {
+    return !state?.level || state.level.panels.includes(panel);
+}
+
+const starText = (count) => '★'.repeat(count) + '☆'.repeat(Math.max(0, 3 - count));
+
+// A row of gated panels should not leave a hole in the grid once its siblings are hidden, so
+// a lone survivor is stretched across both columns.
+function balanceRow(row) {
+    const visible = [...row.children].filter((child) => !child.classList.contains('hidden'));
+    row.classList.toggle('hidden', visible.length === 0);
+    for (const child of row.children) {
+        child.classList.toggle('lg:col-span-2', visible.length === 1 && child === visible[0]);
+    }
+}
+
+function applyLevel(state) {
+    if (levelApplied) return;
+    levelApplied = true;
+    for (const node of document.querySelectorAll('[data-panel]')) {
+        node.classList.toggle('hidden', !shows(state, node.dataset.panel));
+    }
+    for (const id of ['indicator-row', 'portfolio-row']) {
+        if (el(id)) balanceRow(el(id));
+    }
+    // The price chart is always on screen; the level decides which overlays sit on it.
+    if (charts.price && typeof setPriceOverlays === 'function') {
+        setPriceOverlays(charts.price, {
+            trend: shows(state, 'trend'),
+            volume: shows(state, 'volume'),
+        });
+    }
+
+    const level = state.level;
+    if (!level) return;
+    document.title = `Level ${level.number} · ${level.title} · Trading Teacher`;
+    el('level-panel').classList.remove('hidden');
+    el('tutorial-label').textContent = 'Level briefing';
+    teacherMode = true;
+    el('teacher-mode').checked = true;
+}
+
+function goalItems(goals) {
+    return goals.map((goal) => `
+        <li class="flex items-start gap-3">
+            <span class="text-lg leading-none ${goal.met ? 'text-warn' : 'text-dim'}">${goal.met ? '★' : '☆'}</span>
+            <span>
+                <span class="block ${goal.met ? 'text-white' : 'text-muted'}">${esc(goal.label)}</span>
+                ${goal.progress ? `<span class="block text-xs text-dim">${esc(goal.progress)}</span>` : ''}
+            </span>
+        </li>`).join('');
+}
+
+function reviewRow(review) {
+    return `
+        <div class="flex items-start justify-between gap-3 rounded-xl border px-3 py-2 ${review.followed ? 'border-up/40 bg-up/5' : 'border-line bg-ink-soft'}">
+            <span class="min-w-0">
+                <span class="font-semibold ${review.side === 'BUY' ? 'text-up' : 'text-down'}">${review.side}</span>
+                <span class="font-mono">${esc(review.ticker)}</span>
+                <span class="text-xs text-dim">&middot; ${review.date} &middot; ${Number(review.shares).toLocaleString()} @ ${money(review.price)}</span>
+                <span class="block text-xs text-muted">${esc(review.why)}</span>
+            </span>
+            ${review.followed
+                ? '<span class="shrink-0 text-xs font-semibold text-up">✓ followed</span>'
+                : '<span class="shrink-0 text-xs text-dim">✗ missed</span>'}
+        </div>`;
+}
+
+function renderLevel(state) {
+    const level = state.level;
+    if (!level) return;
+    el('level-kicker').textContent = `Training · Level ${level.number} of ${level.count}`;
+    el('level-title').textContent = level.title;
+    el('level-buy').textContent = level.buy_rule;
+    el('level-sell').textContent = level.sell_rule;
+    el('level-goals').innerHTML = goalItems(level.goals);
+    el('level-days').textContent = `${level.days_played} of ${level.trading_days} days`;
+    el('level-bar').style.width = `${Math.min(100, (level.days_played / Math.max(1, level.trading_days)) * 100)}%`;
+    const last = level.trades.at(-1);
+    el('level-last').innerHTML = last
+        ? reviewRow(last)
+        : '<p class="text-dim">No trades yet. Each trade gets checked against the rule right away.</p>';
+}
+
+function openBrief(level) {
+    pause();
+    el('brief-kicker').textContent = `Training level ${level.number} of ${level.count}`;
+    el('brief-title').textContent = level.title;
+    el('brief-tagline').textContent = level.tagline;
+    el('brief-tools').innerHTML = level.tools
+        .map((tool) => `<span class="rounded-full border border-brand/50 bg-brand/10 px-3 py-1 text-xs text-brand-soft">${esc(tool)}</span>`)
+        .join('');
+    el('brief-text').innerHTML = level.brief.map((line) => `<p>${esc(line)}</p>`).join('');
+    el('brief-buy').textContent = level.buy_rule;
+    el('brief-sell').textContent = level.sell_rule;
+    el('brief-goals').innerHTML = goalItems(level.goals);
+    const overlay = el('brief-overlay');
+    overlay.classList.remove('hidden');
+    overlay.classList.add('flex');
+}
+
+function closeBrief(resume) {
+    const overlay = el('brief-overlay');
+    overlay.classList.add('hidden');
+    overlay.classList.remove('flex');
+    if (resume) play();
+}
+
+// Best result so far, per level, in the browser: the catalog on the setup page reads the same
+// key, so a level finished here shows its stars there and unlocks the next one.
+function recordLevel(level) {
+    let progress = {};
+    try { progress = JSON.parse(localStorage.getItem(LEVELS_KEY) || '{}') || {}; } catch { /* private mode */ }
+    const best = progress[level.number] || {};
+    progress[level.number] = {
+        stars: Math.max(best.stars || 0, level.stars),
+        passed: Boolean(best.passed || level.passed),
+    };
+    try { localStorage.setItem(LEVELS_KEY, JSON.stringify(progress)); } catch { /* private mode */ }
+}
+
+async function startLevel(number, button) {
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Loading…';
+    try {
+        const data = await call(`/api/levels/${number}/start`, { method: 'POST', body: '{}' });
+        window.location.href = `/game/${data.session_id}`;
+    } catch (error) {
+        button.disabled = false;
+        button.textContent = label;
+        el('summary-pass').textContent = error.message;
+    }
+}
+
+// --- stock hover card -----------------------------------------------------
+//
+// One floating card for every element tagged data-stock-tip. The watchlist and holdings are
+// rebuilt on every tick, so the card remembers which list its anchor lived in and re-attaches
+// to the fresh element for the same stock instead of pointing at one that is gone.
+const TIP_DELAY_MS = 150;
+let tipTimer = null;
+let tipAnchor = null;
+let tipZone = null;
+
+function stockTipHtml(ticker) {
+    const info = companyInfo[ticker] || {};
+    const quote = latestState?.quotes?.find((row) => row.ticker === ticker);
+    const position = held(ticker);
+    return `
+        <div class="flex items-baseline justify-between gap-3">
+            <span class="font-mono text-lg font-semibold">${esc(ticker)}</span>
+            ${quote?.close != null
+                ? `<span class="tabular-nums">${money(quote.close)} <span class="text-xs ${toneFor(quote.change_pct)}">${pct(quote.change_pct)}</span></span>`
+                : ''}
+        </div>
+        <p class="font-medium">${esc(info.company_name || ticker)}</p>
+        ${info.sector ? `<span class="mt-1 inline-block rounded-full border border-line px-2 py-0.5 text-[10px] uppercase tracking-wide text-dim">${esc(info.sector)}</span>` : ''}
+        <p class="mt-2 text-sm leading-relaxed text-muted">${esc(info.description || 'No description yet.')}</p>
+        ${position ? `<p class="mt-2 text-xs text-accent-soft">You own ${Number(position.shares).toLocaleString()} shares, worth ${money(position.market_value)}.</p>` : ''}`;
+}
+
+function showStockTip(anchor) {
+    tipAnchor = anchor;
+    tipZone = anchor.parentElement?.closest('[id]')?.id || null;
+    const tip = el('stock-tip');
+    tip.innerHTML = stockTipHtml(anchor.dataset.stockTip);
+    tip.classList.remove('hidden');
+    const rect = anchor.getBoundingClientRect();
+    const box = tip.getBoundingClientRect();
+    const below = rect.bottom + 8;
+    tip.style.top = `${below + box.height <= window.innerHeight - 8 ? below : Math.max(8, rect.top - box.height - 8)}px`;
+    tip.style.left = `${Math.min(Math.max(8, rect.left), window.innerWidth - box.width - 8)}px`;
+}
+
+function hideStockTip() {
+    clearTimeout(tipTimer);
+    tipTimer = null;
+    tipAnchor = null;
+    el('stock-tip').classList.add('hidden');
+}
+
+function refreshStockTip() {
+    if (!tipAnchor) return;
+    const anchor = tipAnchor.isConnected
+        ? tipAnchor
+        : tipZone && document.querySelector(`#${tipZone} [data-stock-tip="${tipAnchor.dataset.stockTip}"]`);
+    if (anchor) showStockTip(anchor);
+    else hideStockTip();
+}
+
+function queueStockTip(anchor) {
+    if (anchor && anchor === tipAnchor) return;
+    clearTimeout(tipTimer);
+    tipTimer = null;
+    if (!anchor) {
+        if (tipAnchor) hideStockTip();
+        return;
+    }
+    tipTimer = setTimeout(() => {
+        tipTimer = null;
+        showStockTip(anchor);
+    }, tipAnchor ? 0 : TIP_DELAY_MS);
+}
+
+document.addEventListener('mouseover', (event) => queueStockTip(event.target.closest?.('[data-stock-tip]') || null));
+
+document.addEventListener('focusin', (event) => queueStockTip(event.target.closest?.('[data-stock-tip]') || null));
+document.addEventListener('focusout', hideStockTip);
+document.documentElement.addEventListener('mouseleave', hideStockTip);
+document.addEventListener('scroll', hideStockTip, { capture: true, passive: true });
+
 // --- foldable panels ------------------------------------------------------
 
 // The dashboard is ten panels deep and not all of them matter at once, so the ones a player
@@ -1304,8 +1499,8 @@ function setupCollapsibles() {
             const collapsed = !card.classList.contains('card-collapsed');
             setCollapsed(collapsed);
             rememberCollapsed(name, collapsed);
-            // A chart that was inside a hidden card was sized to nothing while it was away.
-            if (!collapsed) for (const chart of Object.values(charts)) chart.resize();
+            // The plots size themselves from their container (Lightweight Charts runs its own
+            // ResizeObserver), so unfolding a card only has to let the box grow back.
         });
     }
 }
@@ -1487,11 +1682,8 @@ function promoteChart(name) {
     const fold = card.querySelector('.collapse-toggle');
     if (card.classList.contains('card-collapsed') && fold) fold.click();
 
-    // Both canvases are in a differently sized box now, and Chart.js sizes itself from the
-    // box it is given rather than from the window.
-    for (const other of [name, hero.dataset.chart]) {
-        if (charts[other]) charts[other].resize();
-    }
+    // Both plots are in a differently sized box now. They follow that box on their own, so
+    // the swap only has to move the cards and let the containers report their new size.
     try {
         localStorage.setItem(HERO_KEY, name);
     } catch { /* private mode */ }
@@ -1777,7 +1969,13 @@ el('teacher-mode').addEventListener('change', (event) => setTeacherMode(event.ta
 el('coach-continue').addEventListener('click', () => closeCoach(false));
 el('coach-resume').addEventListener('click', () => closeCoach(true));
 
-el('tutorial-btn').addEventListener('click', startTour);
+// With a level running the button opens that level's briefing; otherwise it is the tour.
+el('tutorial-btn').addEventListener('click', () => (latestState?.level ? openBrief(latestState.level) : startTour()));
+el('brief-start').addEventListener('click', () => closeBrief(true));
+el('brief-look').addEventListener('click', () => closeBrief(false));
+el('level-brief-btn').addEventListener('click', () => latestState?.level && openBrief(latestState.level));
+el('summary-replay').addEventListener('click', () => startLevel(latestState.level.number, el('summary-replay')));
+el('summary-next').addEventListener('click', () => startLevel(latestState.level.next_level, el('summary-next')));
 el('tour-skip').addEventListener('click', endTour);
 el('tour-back').addEventListener('click', () => showTourStep(Math.max(0, tourIndex - 1)));
 el('tour-next').addEventListener('click', () => {
@@ -1945,6 +2143,7 @@ async function loadCompanyNames() {
     try {
         const data = await call('/api/universe');
         companyNames = Object.fromEntries(data.tickers.map((row) => [row.ticker, row.company_name]));
+        companyInfo = Object.fromEntries(data.tickers.map((row) => [row.ticker, row]));
     } catch (error) {
         console.error(error);
     }

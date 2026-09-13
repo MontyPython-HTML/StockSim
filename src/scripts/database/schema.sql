@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS game_sessions (
 );
 
 ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS finances_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS level SMALLINT;
 
 
 -- The symbols a player chose to trade. sort_order preserves pick order so the first

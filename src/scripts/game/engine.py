@@ -26,7 +26,7 @@ from decimal import Decimal
 import config
 from scripts.api import nessie
 from scripts.database import database
-from scripts.game import events, expenses, indicators, news, patterns, price_cache, price_source
+from scripts.game import events, expenses, indicators, levels, news, patterns, price_cache, price_source
 
 DEFAULT_CHART_WINDOW = 180
 
@@ -38,6 +38,10 @@ MAX_SIGNALS_PER_TICK = 40
 # How many trailing bars signal detection is handed. The rules compare the last two
 # bars of already-computed columns, so a handful is plenty and keeps an advance cheap.
 SIGNAL_TAIL_ROWS = 5
+
+# How far past the saved clock the page may read ahead. The page buffers a few seconds of
+# play at a time; the cap keeps the endpoint from becoming a window onto the whole future.
+LOOKAHEAD_MAX_DAYS = 60
 
 # A share count is a sanity check, not an economic one: no player trades a billion shares,
 # and anything past this either overflows NUMERIC on the way in or blows up the cost
@@ -235,6 +239,8 @@ def _state_from_bundle(
     ledger = bundle.get("expenses") or []
     bills_paid = sum(float(row["amount"]) for row in ledger if (row.get("kind") or "bill") == "bill")
     salary_earned = sum(float(row["amount"]) for row in ledger if row.get("kind") == "salary")
+    level = levels.get(session.get("level"))
+    portfolio = _portfolio(session, bundle["holdings"], closes, bills_paid, salary_earned)
 
     return {
         "session_id": session_id,
@@ -256,11 +262,7 @@ def _state_from_bundle(
             }
             for ticker in watchlist
         ],
-        "portfolio": _portfolio(session, bundle["holdings"], closes, bills_paid, salary_earned),
-        # Every number is cast here: rows that just landed come back from the driver as
-        # Decimals, and a Decimal in the JSON becomes a string in the browser.
-        # Every number is cast here: rows that just landed come back from the driver as
-        # Decimals, and a Decimal in the JSON becomes a string in the browser.
+        "portfolio": portfolio,
         "dividends": [
             {
                 "ticker": row["ticker"],
@@ -315,7 +317,7 @@ def _state_from_bundle(
         ],
         # The syllabus with what this session has covered, so the screen can show which
         # patterns the player has actually been taught and which are still ahead of them.
-        "patterns": patterns.progress(bundle["events"]),
+        "patterns": levels.filter_patterns(level, patterns.progress(bundle["events"])),
         # Real-life money: what the bank has taken and paid in, and what is coming next.
         "expenses": {
             **expenses.summary(session, sim_date, ledger),
@@ -325,7 +327,8 @@ def _state_from_bundle(
             "source": nessie.source_label() if session.get("finances_enabled", True) else "Pure stock simulation",
             **(expenses.bank_for(session) if session.get("finances_enabled", True) else {"customer": None, "account": None, "employer": None}),
         },
-        "news": news.headlines(session, sim_date, bundle["events"], sources),
+        "news": news.headlines(session, sim_date, bundle["events"], sources) if levels.shows(level, "news") else [],
+        "level": levels.state(level, session, bundle, portfolio, sources) if level else None,
     }
 
 
@@ -450,6 +453,7 @@ def start_session(
     use_finances: bool = True,
     initial_cash: Decimal | None = None,
     reinvest_dividends: bool = False,
+    level: int | None = None,
 ) -> dict:
     """Start a run over a watchlist.
 
@@ -494,6 +498,7 @@ def start_session(
         salary_amount=salary,
         finances_enabled=use_finances,
         reinvest_dividends=reinvest_dividends,
+        level=level,
     )
     session_id = str(session["id"])
     database.set_session_tickers(session_id, watchlist)
@@ -523,6 +528,17 @@ def start_session(
         "paycheck": float(salary),
     }
     return state
+
+
+def start_level(number: int, seed: int | None = None) -> dict:
+    """A training level: a stretch of real history picked for the tool the level teaches."""
+    try:
+        tickers, start, end = levels.plan(number, random.Random(seed))
+    except ValueError as exc:
+        raise GameError(str(exc))
+    return start_session(
+        tickers, start, end, use_finances=False, initial_cash=levels.STARTING_CASH, level=number
+    )
 
 
 # --- background AI --------------------------------------------------------
@@ -707,6 +723,7 @@ def _maybe_schedule_ai(
     event_log: list[dict],
     sources: dict,
     signals: list[dict],
+    level: "levels.Level | None" = None,
 ) -> list[dict]:
     """Queue whatever the cadence says is due. Returns [{kind, ticker}] entries."""
     scheduled: list[dict] = []
@@ -715,9 +732,10 @@ def _maybe_schedule_ai(
         last = _last_event_date(event_log, kind, ticker)
         return None if last is None else sources[ticker].trading_days_between(last, sim_date)
 
+    coach = levels.shows(level, "ai")
     news_ticker = _least_covered(tickers, event_log, "NEWS_EVENT")
     gap = days_since("NEWS_EVENT", news_ticker)
-    if (gap is None or gap >= config.MIN_DAYS_BETWEEN_EVENTS) and (
+    if coach and (gap is None or gap >= config.MIN_DAYS_BETWEEN_EVENTS) and (
         random.random() < config.RANDOM_EVENT_PROBABILITY
     ):
         if _schedule_ai("NEWS_EVENT", session_id, news_ticker, sim_date):
@@ -725,13 +743,13 @@ def _maybe_schedule_ai(
 
     prediction_ticker = _least_covered(tickers, event_log, "PREDICTION")
     prediction_gap = days_since("PREDICTION", prediction_ticker)
-    if prediction_gap is None or prediction_gap >= config.PREDICTION_INTERVAL_DAYS:
+    if coach and (prediction_gap is None or prediction_gap >= config.PREDICTION_INTERVAL_DAYS):
         if _schedule_ai("PREDICTION", session_id, prediction_ticker, sim_date):
             scheduled.append({"kind": "PREDICTION", "ticker": prediction_ticker})
 
     # Shocks only exist where there is a generated future to bend.
     simulated = [ticker for ticker in tickers if sources[ticker].kind == "simulated"]
-    if simulated:
+    if coach and simulated:
         shock_ticker = _least_covered(simulated, event_log, "MARKET_SHOCK")
         if events.should_fire(event_log, shock_ticker, sources[shock_ticker], sim_date):
             if _schedule_ai("MARKET_SHOCK", session_id, shock_ticker, sim_date):
@@ -790,6 +808,9 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
             for signal in indicators.detect_signals(history.tail(SIGNAL_TAIL_ROWS)):
                 signals.append({**signal, "ticker": ticker, "date": sim_date.isoformat()})
 
+    level = levels.get(session.get("level"))
+    if level:
+        signals = [signal for signal in signals if levels.allows_signal(level, signal)]
     if len(signals) > MAX_SIGNALS_PER_TICK:
         signals = signals[-MAX_SIGNALS_PER_TICK:]
 
@@ -816,7 +837,7 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
 
     pending = (
         _maybe_schedule_ai(
-            session_id, watchlist, sim_date, bundle["events"], sources, signals
+            session_id, watchlist, sim_date, bundle["events"], sources, signals, level
         )
         if with_ai and not finished
         else []
@@ -840,6 +861,70 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
     state["pending_ai"] = pending
     state["charged"] = charged
     return state
+
+
+def lookahead(session_id: str, after: date | None = None, days: int = 10) -> dict:
+    """The trading days after `after`, priced but not played.
+
+    Nothing is saved, so the page can play these one day at a time at an even pace and
+    commit them through advance_day in batches. It walks the same calendar advance_day
+    does, so N frames here are exactly the days advancing N days lands on.
+    """
+    session = database.get_session(session_id)
+    if not session:
+        raise GameError("Session not found")
+    sim_date = _as_date(session["sim_date"])
+    watchlist = database.session_tickers(session_id)
+    result = {"sim_date": sim_date.isoformat(), "frames": [], "done": False}
+    if session["status"] != "active" or not watchlist:
+        return {**result, "done": True}
+
+    end_date = _as_date(session["end_date"])
+    price_cache.prefetch(watchlist)
+    sources = price_source.for_watchlist(session, watchlist)
+
+    dates: list[date] = []
+    cursor = sim_date
+    for _ in range(LOOKAHEAD_MAX_DAYS):
+        upcoming = [sources[t].next_trading_day(cursor) for t in watchlist]
+        upcoming = [day for day in upcoming if day is not None and day <= end_date]
+        if not upcoming:
+            result["done"] = True
+            break
+        cursor = min(upcoming)
+        if after is None or cursor > after:
+            dates.append(cursor)
+            if len(dates) >= days:
+                break
+    if not dates:
+        return result
+
+    frames = [{"date": day.isoformat(), "quotes": {}, "rows": {}} for day in dates]
+    for ticker in watchlist:
+        source = sources[ticker]
+        history = source.history_through(dates[-1])
+        if history.empty:
+            continue
+        stamps = history["ts"]
+        fork = source.config.fork_date if isinstance(source, price_source.SimulatedSource) else None
+        for frame, day in zip(frames, dates):
+            end = int(stamps.searchsorted(day, side="right"))
+            if end == 0:
+                continue
+            bar = history.iloc[end - 1]
+            close = float(bar["close"])
+            previous = float(history["close"].iloc[end - 2]) if end > 1 else None
+            # Same numbers latest_quotes gives the state: the last close at or before the day.
+            frame["quotes"][ticker] = {
+                "close": close,
+                "previous_close": previous,
+                "change_pct": (close - previous) / previous * 100 if previous else None,
+                "simulated": bool(fork is not None and bar["ts"] > fork),
+            }
+            # A chart only gains a row on the days its own symbol traded.
+            if bar["ts"] == day:
+                frame["rows"][ticker] = indicators.to_series(history.iloc[end - 1 : end])[0]
+    return {**result, "frames": frames}
 
 
 # --- trading --------------------------------------------------------------
@@ -941,6 +1026,8 @@ def fork_simulation(session_id: str, focus: str | None = None, **overrides) -> d
     session = database.get_session(session_id)
     if not session:
         raise GameError("Session not found")
+    if session.get("level"):
+        raise GameError("Training levels replay real history. Generated futures open up in the full simulation.")
 
     watchlist = database.session_tickers(session_id)
     if not watchlist:
@@ -990,6 +1077,8 @@ def request_prediction(session_id: str, ticker: str | None = None) -> dict:
     session = database.get_session(session_id)
     if not session:
         raise GameError("Session not found")
+    if not levels.shows(levels.get(session.get("level")), "ai"):
+        raise GameError("The AI coach is switched off for this level.")
 
     watchlist = database.session_tickers(session_id)
     if not watchlist:

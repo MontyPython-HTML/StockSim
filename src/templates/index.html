@@ -48,6 +48,53 @@
             </p>
         </div>
 
+        <!-- Training levels: short runs that teach one tool at a time. Each one switches off
+             the panels it is not teaching and grades every trade against a single rule, so the
+             full simulation below is the thing you graduate to. -->
+        <section id="levels"
+            class="mb-6 rounded-3xl border border-brand/30 bg-gradient-to-br from-brand/15 via-surface to-surface p-6">
+            <div class="flex flex-wrap items-end justify-between gap-4">
+                <div>
+                    <p class="text-xs font-semibold uppercase tracking-widest text-brand-soft">Start here &middot; Training</p>
+                    <h2 class="mt-1.5 text-2xl font-bold tracking-tight sm:text-3xl">Learn one tool at a time</h2>
+                    <p class="mt-2 leading-relaxed text-muted">
+                        Five short levels using real past prices. Each level shows only the tools it
+                        teaches and checks every trade you make. Pass a level to unlock the next one,
+                        then try the full game below.
+                    </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-4 text-sm">
+                    <span id="levels-summary" class="text-muted"></span>
+                    <button type="button" id="levels-unlock" class="text-dim transition hover:text-white">Unlock all</button>
+                    <button type="button" id="levels-reset" class="text-dim transition hover:text-down">Reset progress</button>
+                </div>
+            </div>
+            <div class="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                {% for level in levels %}
+                <article data-level="{{ level.number }}" class="flex flex-col rounded-2xl border border-line bg-ink-soft p-4">
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-semibold uppercase tracking-widest text-dim">Level {{ level.number }}</span>
+                        <span data-stars class="text-base tracking-widest text-dim">&#9734;&#9734;&#9734;</span>
+                    </div>
+                    <h3 class="mt-1.5 text-lg font-semibold">{{ level.title }}</h3>
+                    <p class="mt-1 flex-1 text-sm leading-relaxed text-muted">{{ level.tagline }}</p>
+                    <div class="mt-3 flex flex-wrap gap-1.5">
+                        {% for tool in level.tools %}
+                        <span class="rounded-full border border-line-strong px-2.5 py-0.5 text-xs text-muted">{{ tool }}</span>
+                        {% endfor %}
+                    </div>
+                    <p class="mt-2 text-xs text-dim">
+                        {{ level.trading_days }} trading days &middot; {{ level.basket_size }} stock{{ 's' if level.basket_size != 1 else '' }}
+                    </p>
+                    <button type="button" data-level-start
+                        class="mt-3 rounded-full bg-brand py-2 text-sm font-semibold transition hover:bg-brand-soft">Play</button>
+                    <p data-level-lock class="mt-1.5 hidden text-center text-xs text-dim">Pass level {{ level.number - 1 }} to unlock</p>
+                </article>
+                {% endfor %}
+            </div>
+            <p id="levels-error" class="mt-4 hidden rounded-xl border border-down/40 bg-down/10 p-4 text-down"></p>
+        </section>
+
         <!-- Two columns from 1024px, not 1280px. On a laptop the picker and the settings used
              to stack into one very tall column with an empty half-page beside it. -->
         <form id="start-form" class="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
@@ -489,6 +536,89 @@
                 submit.textContent = 'Start trading';
             }
         });
+
+        // --- training levels ------------------------------------------------------
+        // Progress lives in the browser: the server owns what a level contains, and this owns
+        // which ones are finished. A level unlocks the one after it, and "Unlock all" is the
+        // escape hatch for someone who would rather just look around.
+        const LEVELS_KEY = 'tradingTeacher.levels';
+        const levelCards = [...document.querySelectorAll('[data-level]')];
+        const levelError = document.getElementById('levels-error');
+
+        function levelProgress() {
+            try { return JSON.parse(localStorage.getItem(LEVELS_KEY) || '{}') || {}; } catch { return {}; }
+        }
+
+        function saveLevelProgress(progress) {
+            try { localStorage.setItem(LEVELS_KEY, JSON.stringify(progress)); } catch { /* private mode */ }
+        }
+
+        function renderLevels() {
+            const progress = levelProgress();
+            let passed = 0;
+            let stars = 0;
+            let nextUp = null;
+            for (const card of levelCards) {
+                const number = Number(card.dataset.level);
+                const best = progress[number] || {};
+                const open = number === 1 || progress.unlocked_all || Boolean(progress[number - 1]?.passed);
+                if (best.passed) passed += 1;
+                stars += best.stars || 0;
+                if (open && !best.passed && nextUp === null) nextUp = number;
+
+                const starBox = card.querySelector('[data-stars]');
+                starBox.textContent = '★'.repeat(best.stars || 0) + '☆'.repeat(3 - (best.stars || 0));
+                starBox.className = `text-base tracking-widest ${best.stars ? 'text-warn' : 'text-dim'}`;
+                const button = card.querySelector('[data-level-start]');
+                button.disabled = !open;
+                button.textContent = !open ? 'Locked' : best.passed ? 'Replay' : 'Play';
+                button.className = 'mt-3 rounded-full py-2 text-sm font-semibold transition ' + (!open
+                    ? 'cursor-not-allowed border border-line text-dim'
+                    : best.passed
+                        ? 'border border-line-strong text-muted hover:border-muted hover:text-white'
+                        : 'bg-brand hover:bg-brand-soft');
+                card.querySelector('[data-level-lock]').classList.toggle('hidden', open);
+            }
+            for (const card of levelCards) {
+                card.className = 'flex flex-col rounded-2xl border p-4 '
+                    + (Number(card.dataset.level) === nextUp ? 'border-brand bg-brand/10' : 'border-line bg-ink-soft');
+            }
+            document.getElementById('levels-summary').textContent =
+                `${passed} of ${levelCards.length} passed · ${stars} of ${levelCards.length * 3} stars`;
+        }
+
+        for (const card of levelCards) {
+            card.querySelector('[data-level-start]').addEventListener('click', async (event) => {
+                const button = event.currentTarget;
+                levelError.classList.add('hidden');
+                button.disabled = true;
+                button.textContent = 'Loading…';
+                try {
+                    const response = await fetch(`/api/levels/${card.dataset.level}/start`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: '{}',
+                    });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || 'Could not start the level');
+                    window.location.href = `/game/${data.session_id}`;
+                } catch (error) {
+                    levelError.textContent = error.message;
+                    levelError.classList.remove('hidden');
+                    renderLevels();
+                }
+            });
+        }
+
+        document.getElementById('levels-unlock').addEventListener('click', () => {
+            saveLevelProgress({ ...levelProgress(), unlocked_all: true });
+            renderLevels();
+        });
+        document.getElementById('levels-reset').addEventListener('click', () => {
+            saveLevelProgress({});
+            renderLevels();
+        });
+        renderLevels();
 
         (function preselect() {
             const wanted = new Set(DEFAULT_BASKET);
