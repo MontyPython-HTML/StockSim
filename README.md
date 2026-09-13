@@ -10,7 +10,7 @@ Monty Python & HTML
 
 ## What this is
 
-A trading teacher. You pick a **basket** of stocks, replay a real stretch of their history
+**StockSim** is a trading teacher. You pick a **basket** of stocks, replay a real stretch of their history
 a day at a time, and trade any of them against the close while watching the signals
 traders actually read (SMA crossovers, RSI, MACD, volume spikes). The chart follows one
 symbol at a time; alongside it you get the whole basket rebased to 100, so correlated

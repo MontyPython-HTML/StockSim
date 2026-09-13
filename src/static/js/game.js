@@ -1300,6 +1300,7 @@ function applyLevel(state) {
     for (const id of ['indicator-row', 'portfolio-row']) {
         if (el(id)) balanceRow(el(id));
     }
+    ensureVisibleHero();
     // The price chart is always on screen; the level decides which overlays sit on it.
     if (charts.price && typeof setPriceOverlays === 'function') {
         setPriceOverlays(charts.price, {
@@ -1310,7 +1311,7 @@ function applyLevel(state) {
 
     const level = state.level;
     if (!level) return;
-    document.title = `Level ${level.number} · ${level.title} · Trading Teacher`;
+    document.title = `Level ${level.number} · ${level.title} · StockSim`;
     el('level-panel').classList.remove('hidden');
     el('tutorial-label').textContent = 'Level briefing';
     teacherMode = true;
@@ -1511,25 +1512,47 @@ function rememberCollapsed(name, collapsed) {
     } catch { /* private mode */ }
 }
 
+// The side column is about 340px wide, and a title, a status pill, the grip and the fold
+// button on one row crushed the title onto two lines and pushed the button off the card. The
+// head is rebuilt as two lines instead: the title with its controls on top, and whatever
+// else the header held (badges, buttons, a note) wrapping underneath.
+function buildCardHead(card) {
+    const first = card.firstElementChild;
+    const heading = card.querySelector('h2');
+    if (!first || !heading) return first;
+
+    const head = document.createElement('div');
+    head.className = 'card-head mb-4';
+    const top = document.createElement('div');
+    top.className = 'flex items-center gap-3';
+    const controls = document.createElement('div');
+    controls.className = 'card-controls ml-auto flex shrink-0 items-center gap-1';
+    card.insertBefore(head, first);
+    heading.classList.add('min-w-0');
+    top.append(heading, controls);
+    head.appendChild(top);
+
+    if (first !== heading) {
+        const extra = document.createElement('div');
+        extra.className = 'card-head-extra mt-2 flex flex-wrap items-center gap-2';
+        for (const node of [...first.children]) {
+            // A wrapper the heading was lifted out of can be left empty, but a badge the page
+            // fills in later has an id and is kept even while it has no text.
+            if (node.id || node.children.length || node.textContent.trim()) extra.appendChild(node);
+        }
+        first.remove();
+        if (extra.children.length) head.appendChild(extra);
+    }
+    return head;
+}
+
 function setupCollapsibles() {
     const remembered = collapsedNames();
     for (const card of document.querySelectorAll('[data-collapse]')) {
         const name = card.dataset.collapse;
-        const heading = card.querySelector('h2');
-        let header = card.firstElementChild;
+        // Chart cards already lay their header out around a control cluster.
+        const header = card.querySelector('[data-chart-controls]') ? card.firstElementChild : buildCardHead(card);
         if (!header) continue;
-
-        // A card whose first child *is* the heading (a title with no header row around it)
-        // gets a row of its own, so the toggle has somewhere sensible to sit instead of being
-        // appended inside the <h2> - where it would join the heading's own accessible name and
-        // read out as "MACD (12, 26, 9) Hide".
-        if (heading && header === heading) {
-            const row = document.createElement('div');
-            row.className = 'mb-3 flex items-center justify-between gap-3';
-            card.insertBefore(row, heading);
-            row.appendChild(heading);
-            header = row;
-        }
 
         const body = document.createElement('div');
         body.className = 'collapse-body';
@@ -1543,12 +1566,13 @@ function setupCollapsibles() {
             + '<svg viewBox="0 0 16 16" class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5l4-4" /></svg>';
         // Into the header's control cluster when the card has one, so the fold toggle and the
         // enlarge hint stay a single group at the end of the row.
-        (card.querySelector('[data-chart-controls]') || header).appendChild(toggle);
+        (card.querySelector('[data-chart-controls], .card-controls') || header).appendChild(toggle);
 
         const setCollapsed = (collapsed) => {
             card.classList.toggle('card-collapsed', collapsed);
             toggle.setAttribute('aria-expanded', String(!collapsed));
             toggle.querySelector('.collapse-label').textContent = collapsed ? 'Show' : 'Hide';
+            toggle.title = collapsed ? 'Show this panel' : 'Hide this panel';
         };
         setCollapsed(remembered.has(name) || card.dataset.collapseDefault === 'closed');
 
@@ -1569,6 +1593,26 @@ function setupCollapsibles() {
 // be dragged into that order, and the arrangement is remembered per browser - the same way
 // the folded state of each card is.
 const ORDER_KEY = 'tradingTeacher.cardOrder';
+
+function gripButton(label) {
+    const grip = document.createElement('button');
+    grip.type = 'button';
+    grip.draggable = true;
+    grip.className = 'card-grip flex h-7 items-center rounded-lg px-1 text-dim transition hover:text-white';
+    grip.title = 'Drag to move (Alt + arrows also works)';
+    grip.setAttribute('aria-label', label);
+    grip.innerHTML = '<svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="currentColor" aria-hidden="true">'
+        + '<circle cx="6" cy="4" r="1.2"/><circle cx="10" cy="4" r="1.2"/>'
+        + '<circle cx="6" cy="8" r="1.2"/><circle cx="10" cy="8" r="1.2"/>'
+        + '<circle cx="6" cy="12" r="1.2"/><circle cx="10" cy="12" r="1.2"/></svg>';
+    return grip;
+}
+
+// Ahead of the fold button wherever that sits, so the two controls stay together.
+function placeGrip(card, grip, fallback) {
+    const fold = card.querySelector('.collapse-toggle');
+    (fold?.parentElement || fallback).insertBefore(grip, fold || null);
+}
 
 function storedOrder() {
     try {
@@ -1641,19 +1685,8 @@ function setupReorder() {
     for (const card of container.querySelectorAll('[data-collapse]')) {
         const header = card.firstElementChild;
         if (!header) continue;
-        const grip = document.createElement('button');
-        grip.type = 'button';
-        grip.draggable = true;
-        grip.className = 'card-grip flex h-7 items-center rounded-lg px-1 text-dim transition hover:text-white';
-        grip.title = 'Drag to reorder (Alt + arrows also works)';
-        grip.setAttribute('aria-label', `Reorder the ${card.dataset.collapse} panel`);
-        grip.innerHTML = '<svg viewBox="0 0 16 16" class="h-3.5 w-3.5" fill="currentColor" aria-hidden="true">'
-            + '<circle cx="6" cy="4" r="1.2"/><circle cx="10" cy="4" r="1.2"/>'
-            + '<circle cx="6" cy="8" r="1.2"/><circle cx="10" cy="8" r="1.2"/>'
-            + '<circle cx="6" cy="12" r="1.2"/><circle cx="10" cy="12" r="1.2"/></svg>';
-        // Ahead of the fold button, so the two controls sit together at the end of the row.
-        const fold = header.querySelector('.collapse-toggle');
-        header.insertBefore(grip, fold || null);
+        const grip = gripButton(`Reorder the ${card.dataset.collapse} panel`);
+        placeGrip(card, grip, header);
 
         grip.addEventListener('dragstart', (event) => {
             dragging = card;
@@ -1704,12 +1737,110 @@ const CHART_KEYS = ['price', 'rsi', 'macd', 'basket', 'equity'];
 const CHART_LABELS = { price: 'price', basket: 'basket', equity: 'account equity' };
 let priceHint = null;
 
+// The charts can also be dragged onto each other. Five slots keep their shape - one large,
+// four small - and dropping a chart on another swaps the two, so whichever card lands in the
+// first slot is the large one. Enlarge is the same swap, aimed at that first slot.
+const CHART_ORDER_KEY = 'tradingTeacher.chartOrder';
+let draggingChart = null;
+
+const chartCards = () => [...document.querySelectorAll('.chart-card')];
+
 function heroCard() {
-    return document.querySelector('.chart-card.is-hero');
+    return chartCards()[0];
 }
 
 function cardForChart(name) {
     return document.querySelector(`.chart-card[data-chart="${name}"]`);
+}
+
+function swapCharts(a, b, { remember = true } = {}) {
+    if (!a || !b || a === b) return;
+    // A comment holds the first card's place while the second takes it, so neither card is
+    // ever detached for long enough to lose its canvas.
+    const marker = document.createComment('chart-swap');
+    a.replaceWith(marker);
+    b.replaceWith(a);
+    marker.replaceWith(b);
+
+    const cards = chartCards();
+    cards.forEach((card, index) => card.classList.toggle('is-hero', index === 0));
+    // A folded panel would take the big stage and stay hidden inside it.
+    const fold = cards[0].querySelector('.collapse-toggle');
+    if (cards[0].classList.contains('card-collapsed') && fold) fold.click();
+    // A level can hide some charts; a lone survivor in a row still spans both columns.
+    for (const id of ['indicator-row', 'portfolio-row']) {
+        if (el(id)) balanceRow(el(id));
+    }
+    if (!remember) return;
+    try {
+        localStorage.setItem(CHART_ORDER_KEY, JSON.stringify(cards.map((card) => card.dataset.chart)));
+        localStorage.setItem(HERO_KEY, cards[0].dataset.chart);
+    } catch { /* private mode */ }
+}
+
+function storedChartOrder() {
+    try {
+        const order = JSON.parse(localStorage.getItem(CHART_ORDER_KEY) || 'null');
+        return Array.isArray(order) ? order.filter((name) => CHART_KEYS.includes(name)) : null;
+    } catch {
+        return null;
+    }
+}
+
+// A level that hides the chart in the first slot would leave the large stage empty. The fix
+// is for this level only, so it is not written over the order the player chose.
+function ensureVisibleHero() {
+    const cards = chartCards();
+    if (!cards[0]?.classList.contains('hidden')) return;
+    const visible = cards.find((card) => !card.classList.contains('hidden'));
+    if (visible) swapCharts(visible, cards[0], { remember: false });
+}
+
+function setupChartMoves(card, name, label, controls) {
+    const grip = gripButton(`Move the ${label} chart`);
+    placeGrip(card, grip, controls);
+
+    grip.addEventListener('dragstart', (event) => {
+        draggingChart = card;
+        card.classList.add('is-dragging');
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', name);
+        const box = card.getBoundingClientRect();
+        event.dataTransfer.setDragImage(card, event.clientX - box.left, event.clientY - box.top);
+    });
+    grip.addEventListener('dragend', () => {
+        for (const other of chartCards()) other.classList.remove('is-dragging', 'is-drop-target');
+        draggingChart = null;
+    });
+
+    card.addEventListener('dragover', (event) => {
+        if (!draggingChart || draggingChart === card) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        card.classList.add('is-drop-target');
+    });
+    card.addEventListener('dragleave', (event) => {
+        if (!card.contains(event.relatedTarget)) card.classList.remove('is-drop-target');
+    });
+    card.addEventListener('drop', (event) => {
+        if (!draggingChart || draggingChart === card) return;
+        event.preventDefault();
+        card.classList.remove('is-drop-target');
+        swapCharts(draggingChart, card);
+    });
+
+    // Dragging is not available to everyone: Alt + an arrow swaps with the neighbouring slot.
+    grip.addEventListener('keydown', (event) => {
+        const step = ['ArrowUp', 'ArrowLeft'].includes(event.key) ? -1
+            : ['ArrowDown', 'ArrowRight'].includes(event.key) ? 1 : 0;
+        if (!event.altKey || !step) return;
+        event.preventDefault();
+        const visible = chartCards().filter((other) => !other.classList.contains('hidden'));
+        const target = visible[visible.indexOf(card) + step];
+        if (!target) return;
+        swapCharts(card, target);
+        grip.focus();
+    });
 }
 
 function storedHero() {
@@ -1721,29 +1852,10 @@ function storedHero() {
     }
 }
 
+// Both plots end up in a differently sized box. They follow that box on their own, so the
+// swap only has to move the cards and let the containers report their new size.
 function promoteChart(name) {
-    const card = cardForChart(name);
-    const hero = heroCard();
-    if (!card || !hero || card === hero) return;
-
-    // Swap the two panels where they stand. A comment holds the first one's place while the
-    // second takes it, so neither card is ever detached for long enough to lose its canvas.
-    const marker = document.createComment('chart-swap');
-    hero.replaceWith(marker);
-    card.replaceWith(hero);
-    marker.replaceWith(card);
-    hero.classList.remove('is-hero');
-    card.classList.add('is-hero');
-
-    // A folded panel would take the big stage and stay hidden inside it.
-    const fold = card.querySelector('.collapse-toggle');
-    if (card.classList.contains('card-collapsed') && fold) fold.click();
-
-    // Both plots are in a differently sized box now. They follow that box on their own, so
-    // the swap only has to move the cards and let the containers report their new size.
-    try {
-        localStorage.setItem(HERO_KEY, name);
-    } catch { /* private mode */ }
+    swapCharts(cardForChart(name), heroCard());
 }
 
 function setupHeroChart() {
@@ -1772,6 +1884,7 @@ function setupHeroChart() {
         const controls = card.querySelector('[data-chart-controls]') || header;
         if (controls) controls.insertBefore(hint, controls.querySelector('.collapse-toggle'));
         if (name === 'price') priceHint = hint;
+        if (controls) setupChartMoves(card, name, label, controls);
 
         card.addEventListener('click', (event) => {
             // The plot and the hint are the targets; the notes under a chart stay selectable
@@ -1781,8 +1894,13 @@ function setupHeroChart() {
         });
     }
 
-    const remembered = storedHero();
-    if (remembered !== CHART_KEYS[0]) promoteChart(remembered);
+    const order = storedChartOrder();
+    if (order) {
+        order.forEach((chart, index) => swapCharts(cardForChart(chart), chartCards()[index], { remember: false }));
+    } else {
+        const remembered = storedHero();
+        if (remembered !== CHART_KEYS[0]) promoteChart(remembered);
+    }
 }
 
 // --- the walkthrough ------------------------------------------------------

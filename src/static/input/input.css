@@ -154,8 +154,12 @@ html {
     }
 
     /* Only while the pointer is over a small panel (or a keyboard has landed on its
-       control): four permanent "enlarge" buttons would be more clutter than help. */
+       control): four permanent "enlarge" buttons would be more clutter than help. The
+       display is set here rather than with a utility class, which would beat the display:
+       none below; without it the arrow icon (a block-level svg) dropped under the word. */
     .chart-zoom-hint {
+        display: inline-flex;
+        white-space: nowrap;
         opacity: 0;
         pointer-events: none;
         transition: opacity 120ms ease;
@@ -172,6 +176,44 @@ html {
     .chart-card.is-hero .chart-zoom-hint {
         display: none;
     }
+}
+
+/* Folding and moving cards. Deliberately outside the component layer: the header rows carry
+   margin utilities, and the utilities layer wins over any component rule whatever its
+   specificity, which left a folded card with a gap under its title. */
+.card-collapsed > :first-child {
+    margin-bottom: 0;
+}
+
+.card-collapsed .card-head-extra {
+    display: none;
+}
+
+.card-head-extra > span,
+.card-head-extra > button {
+    white-space: nowrap;
+}
+
+/* Beside a side card's title the word "Hide" cost enough width to wrap "Bills & dividends"
+   onto two lines, so the arrow alone shows there. The word stays for screen readers. */
+.card-controls .collapse-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+.chart-card.is-dragging {
+    opacity: 0.4;
+    outline: 1px dashed var(--color-line-strong);
+    outline-offset: 4px;
+}
+
+.chart-card.is-drop-target {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 4px;
 }
 
 /* The newswire strip. The track holds the day's headlines once, repeated, so the loop can
