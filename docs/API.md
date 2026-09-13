@@ -190,7 +190,7 @@ Moves the simulation forward one or more trading days.
 ```json
 { "days": 1, "with_ai": true }
 ```
-- `days` — optional, default `1`. Advances this many trading days per call (the frontend batches more days per call at higher playback speeds instead of ticking faster, since each call is a network round trip).
+- `days` — optional, default `1`. Advances this many trading days per call (the frontend plays days prefetched from [`GET /lookahead`](#get-apisessionsession_idlookahead) one per frame and commits the ones it has shown here in batches, since each call is a network round trip).
 - `with_ai` — optional, default `true`. Set `false` to skip rolling for a random news event / scheduled prediction on this call.
 
 **Response `200`** — the [session state object](#the-session-state-object), plus:
@@ -210,6 +210,39 @@ Moves the simulation forward one or more trading days.
 - Advancing past `end_date` is a no-op that just returns the final state with `status: "finished"` and empty `signals`/`pending_ai`.
 
 **Errors (`400`)** — `Session not found`; `days` that is not an integer, or is below 1.
+
+---
+
+## `GET /api/session/<session_id>/lookahead`
+
+The next trading days after the clock, priced but **not** played: nothing is saved. The game page buffers these so it can show one day per frame at an even pace while `/advance` catches the saved clock up in batches. Before a trade, a pause or "Next day" the page commits every day it has shown, so trades always fill on the day on screen.
+
+**Query parameters**
+- `after` — optional `YYYY-MM-DD`. Only days after this one are returned (the page passes the last day it already holds). Defaults to the session's `sim_date`.
+- `days` — optional, default `1`. How many days to return.
+
+Reads at most 60 trading days past the saved `sim_date`, so a page far ahead of its last `/advance` gets an empty `frames` list until it commits.
+
+**Response `200`**
+```json
+{
+  "sim_date": "2023-03-21",
+  "done": false,
+  "frames": [
+    {
+      "date": "2023-03-22",
+      "quotes": { "AMZN": { "close": 98.7, "previous_close": 100.61, "change_pct": -1.9, "simulated": false } },
+      "rows": { "AMZN": { "date": "2023-03-22", "close": 98.7, "volume": 60000000, "sma20": 95.1, "sma50": 97.0,
+                          "rsi14": 52.3, "macd": 0.4, "macd_signal": -0.2, "macd_hist": 0.6 } }
+    }
+  ]
+}
+```
+- `frames` — walks the same calendar as `/advance`, so advancing N days lands on `frames[N-1].date`. `quotes` holds the same numbers the state's `quotes` will show on that day, for every symbol; `rows` holds a chart row only for symbols that traded that day.
+- `done` — `true` when no trading days are left after the returned frames, or the session is not active.
+- If `/advance` later reports a different close for a buffered day (a market shock rewrote a simulated future), the page drops its buffer and fetches again.
+
+**Errors (`400`)** — `Session not found`; `after` that is not a date; `days` that is not an integer, or is below 1.
 
 ---
 
@@ -460,6 +493,7 @@ bar also gets a volume spike.
 | POST   | `/api/session/start`               | Start a new session                        |
 | GET    | `/api/session/<id>/state`          | Fetch current session state                |
 | POST   | `/api/session/<id>/advance`        | Advance N trading days                     |
+| GET    | `/api/session/<id>/lookahead`      | Next days' prices, nothing saved           |
 | POST   | `/api/session/<id>/trade`          | Buy/sell at today's close                  |
 | POST   | `/api/session/<id>/predict`        | Ask the AI coach for a prediction now      |
 | POST   | `/api/session/<id>/simulate`       | Fork onto a generated future               |
@@ -559,7 +593,7 @@ Where each piece of this API actually lives, and the exact handler for each endp
 | [`src/mcp_server/gemini_tools.py`](../src/mcp_server/gemini_tools.py) | Gemini prompt building + calling |
 | [`src/scripts/ingestion/ingest_prices.py`](../src/scripts/ingestion/ingest_prices.py) | CLI to load historical prices into TigerData |
 | [`src/static/js/game.js`](../src/static/js/game.js) | Frontend: calls the API, drives play/pause/speed |
-| [`src/static/js/chart-setup.js`](../src/static/js/chart-setup.js) | Frontend: Chart.js setup |
+| [`src/static/js/chart-setup.js`](../src/static/js/chart-setup.js) | Frontend: TradingView Lightweight Charts setup (price, RSI and MACD share a crosshair; hover readouts) |
 | [`src/templates/index.html`](../src/templates/index.html) | Start-session page |
 | [`src/templates/game.html`](../src/templates/game.html) | Game screen |
 

@@ -279,6 +279,18 @@ def advance(session_id: str):
     )
 
 
+@api.get("/session/<session_id>/lookahead")
+def session_lookahead(session_id: str):
+    after = request.args.get("after")
+    return jsonify(
+        engine.lookahead(
+            session_id,
+            after=_parse_date(after, "after") if after else None,
+            days=_day_count(request.args.get("days")),
+        )
+    )
+
+
 @api.post("/session/<session_id>/trade")
 def trade(session_id: str):
     body = request.get_json(silent=True) or {}

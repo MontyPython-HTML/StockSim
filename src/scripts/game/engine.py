@@ -39,6 +39,10 @@ MAX_SIGNALS_PER_TICK = 40
 # bars of already-computed columns, so a handful is plenty and keeps an advance cheap.
 SIGNAL_TAIL_ROWS = 5
 
+# How far past the saved clock the page may read ahead. The page buffers a few seconds of
+# play at a time; the cap keeps the endpoint from becoming a window onto the whole future.
+LOOKAHEAD_MAX_DAYS = 60
+
 # A share count is a sanity check, not an economic one: no player trades a billion shares,
 # and anything past this either overflows NUMERIC on the way in or blows up the cost
 # arithmetic. Also catches NaN and infinity, which slip through every comparison.
@@ -703,6 +707,70 @@ def advance_day(session_id: str, days: int = 1, with_ai: bool = True, focus: str
     state["pending_ai"] = pending
     state["charged"] = charged
     return state
+
+
+def lookahead(session_id: str, after: date | None = None, days: int = 10) -> dict:
+    """The trading days after `after`, priced but not played.
+
+    Nothing is saved, so the page can play these one day at a time at an even pace and
+    commit them through advance_day in batches. It walks the same calendar advance_day
+    does, so N frames here are exactly the days advancing N days lands on.
+    """
+    session = database.get_session(session_id)
+    if not session:
+        raise GameError("Session not found")
+    sim_date = _as_date(session["sim_date"])
+    watchlist = database.session_tickers(session_id)
+    result = {"sim_date": sim_date.isoformat(), "frames": [], "done": False}
+    if session["status"] != "active" or not watchlist:
+        return {**result, "done": True}
+
+    end_date = _as_date(session["end_date"])
+    price_cache.prefetch(watchlist)
+    sources = price_source.for_watchlist(session, watchlist)
+
+    dates: list[date] = []
+    cursor = sim_date
+    for _ in range(LOOKAHEAD_MAX_DAYS):
+        upcoming = [sources[t].next_trading_day(cursor) for t in watchlist]
+        upcoming = [day for day in upcoming if day is not None and day <= end_date]
+        if not upcoming:
+            result["done"] = True
+            break
+        cursor = min(upcoming)
+        if after is None or cursor > after:
+            dates.append(cursor)
+            if len(dates) >= days:
+                break
+    if not dates:
+        return result
+
+    frames = [{"date": day.isoformat(), "quotes": {}, "rows": {}} for day in dates]
+    for ticker in watchlist:
+        source = sources[ticker]
+        history = source.history_through(dates[-1])
+        if history.empty:
+            continue
+        stamps = history["ts"]
+        fork = source.config.fork_date if isinstance(source, price_source.SimulatedSource) else None
+        for frame, day in zip(frames, dates):
+            end = int(stamps.searchsorted(day, side="right"))
+            if end == 0:
+                continue
+            bar = history.iloc[end - 1]
+            close = float(bar["close"])
+            previous = float(history["close"].iloc[end - 2]) if end > 1 else None
+            # Same numbers latest_quotes gives the state: the last close at or before the day.
+            frame["quotes"][ticker] = {
+                "close": close,
+                "previous_close": previous,
+                "change_pct": (close - previous) / previous * 100 if previous else None,
+                "simulated": bool(fork is not None and bar["ts"] > fork),
+            }
+            # A chart only gains a row on the days its own symbol traded.
+            if bar["ts"] == day:
+                frame["rows"][ticker] = indicators.to_series(history.iloc[end - 1 : end])[0]
+    return {**result, "frames": frames}
 
 
 # --- trading --------------------------------------------------------------

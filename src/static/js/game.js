@@ -1,13 +1,13 @@
 const sessionId = document.body.dataset.sessionId;
 
-// Past 2x the browser batches days per request instead of ticking faster, because a
-// round trip to the cloud database costs more than the interval would allow.
+// Every speed shows one day per frame from a prefetched buffer; faster only means shorter
+// frames. The server is told about the shown days in batches (see "playback").
 const SPEEDS = [
-    { label: '0.5x · 1 day/2s', ms: 2000, days: 1 },
-    { label: '1x · 1 day/sec', ms: 1000, days: 1 },
-    { label: '2x · 2 days/sec', ms: 500, days: 1 },
-    { label: '5x · 5 days/sec', ms: 500, days: 3 },
-    { label: '10x · 10 days/sec', ms: 500, days: 5 },
+    { label: '0.5x · 1 day/2s', perSecond: 0.5 },
+    { label: '1x · 1 day/sec', perSecond: 1 },
+    { label: '2x · 2 days/sec', perSecond: 2 },
+    { label: '5x · 5 days/sec', perSecond: 5 },
+    { label: '10x · 10 days/sec', perSecond: 10 },
 ];
 
 const charts = {
@@ -17,6 +17,7 @@ const charts = {
     basket: createBasketChart(document.getElementById('basket-chart')),
     equity: createEquityChart(document.getElementById('equity-chart')),
 };
+linkCrosshairs([charts.price, charts.rsi, charts.macd]);
 
 const el = (id) => document.getElementById(id);
 const money = (value) => value == null ? '—' : `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -32,6 +33,9 @@ const PLAYING = 'rounded-full bg-accent px-8 py-3 text-lg font-semibold text-ink
 
 let timer = null;
 let inFlight = false;
+// `serverState` is the last reply as the server saved it; `latestState` is that state moved
+// forward to the day on screen, which is what everything the player reads is drawn from.
+let serverState = null;
 let latestState = null;
 let latestSimulation = null;
 let focus = null;
@@ -89,30 +93,46 @@ function held(position) {
 
 function renderWatchlist(state) {
     const list = el('watchlist');
-    list.innerHTML = '';
+    // Rebuilt only when something structural changed. Replacing the buttons on every played
+    // day would swallow a click that lands between mousedown and mouseup.
+    const signature = state.quotes
+        .map((quote) => `${quote.ticker}:${quote.ticker === state.focus}:${held(quote.ticker)?.shares ?? ''}:${quote.simulated}`)
+        .join('|');
+    if (list.dataset.signature !== signature) {
+        list.dataset.signature = signature;
+        list.innerHTML = '';
+        for (const quote of state.quotes) {
+            const active = quote.ticker === state.focus;
+            const position = held(quote.ticker);
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.dataset.stockTip = quote.ticker;
+            // Outlined by default, blue only for the focused symbol: the same treatment the
+            // mock gives its list rows.
+            button.className = `flex items-center gap-4 rounded-2xl border px-5 py-3 text-left transition ${
+                active ? 'border-brand bg-brand/10' : 'border-line-strong bg-transparent hover:border-muted'}`;
+            button.innerHTML = `
+                <span>
+                    <span class="block font-mono text-lg font-semibold">${quote.ticker}</span>
+                    <span class="block text-xs text-dim">${companyNames[quote.ticker] || ''}</span>
+                </span>
+                <span class="text-right">
+                    <span data-close class="block tabular-nums"></span>
+                    <span data-change class="block text-xs tabular-nums"></span>
+                </span>
+                ${position ? `<span class="rounded-full bg-accent/20 px-3 py-1 text-xs font-semibold tabular-nums text-accent-soft">${Number(position.shares).toLocaleString()}</span>` : ''}
+                ${quote.simulated ? '<span class="rounded-full border border-warn/50 px-2 py-0.5 text-[10px] uppercase tracking-wide text-warn">sim</span>' : ''}`;
+            button.addEventListener('click', () => setFocus(quote.ticker));
+            list.appendChild(button);
+        }
+    }
     for (const quote of state.quotes) {
-        const active = quote.ticker === state.focus;
-        const position = held(quote.ticker);
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.dataset.stockTip = quote.ticker;
-        // Outlined by default, blue only for the focused symbol: the same treatment the
-        // mock gives its list rows.
-        button.className = `flex items-center gap-4 rounded-2xl border px-5 py-3 text-left transition ${
-            active ? 'border-brand bg-brand/10' : 'border-line-strong bg-transparent hover:border-muted'}`;
-        button.innerHTML = `
-            <span>
-                <span class="block font-mono text-lg font-semibold">${quote.ticker}</span>
-                <span class="block text-xs text-dim">${companyNames[quote.ticker] || ''}</span>
-            </span>
-            <span class="text-right">
-                <span class="block tabular-nums">${money(quote.close)}</span>
-                <span class="block text-xs tabular-nums ${toneFor(quote.change_pct)}">${pct(quote.change_pct)}</span>
-            </span>
-            ${position ? `<span class="rounded-full bg-accent/20 px-3 py-1 text-xs font-semibold tabular-nums text-accent-soft">${Number(position.shares).toLocaleString()}</span>` : ''}
-            ${quote.simulated ? '<span class="rounded-full border border-warn/50 px-2 py-0.5 text-[10px] uppercase tracking-wide text-warn">sim</span>' : ''}`;
-        button.addEventListener('click', () => setFocus(quote.ticker));
-        list.appendChild(button);
+        const button = list.querySelector(`[data-stock-tip="${quote.ticker}"]`);
+        if (!button) continue;
+        button.querySelector('[data-close]').textContent = money(quote.close);
+        const change = button.querySelector('[data-change]');
+        change.textContent = pct(quote.change_pct);
+        change.className = `block text-xs tabular-nums ${toneFor(quote.change_pct)}`;
     }
 }
 
@@ -122,7 +142,7 @@ function renderTradePanel(state) {
         select.innerHTML = state.tickers
             .map((ticker) => `<option value="${ticker}">${ticker}</option>`).join('');
     }
-    select.value = state.focus;
+    if (select.value !== state.focus) select.value = state.focus;
 
     const quote = state.quotes.find((row) => row.ticker === state.focus) || {};
     el('trade-price').textContent = money(quote.close);
@@ -143,34 +163,49 @@ function renderHoldings(state) {
     const body = el('holdings-body');
     const positions = state.portfolio.positions;
     el('positions').textContent = String(positions.length);
-    if (!positions.length) {
-        body.innerHTML = '<p class="py-2 text-sm text-dim">You don\'t own any stocks yet.</p>';
-        return;
-    }
-    body.innerHTML = '';
-    for (const position of positions) {
-        const row = document.createElement('div');
-        row.className = 'rounded-xl border border-line bg-ink-soft p-3';
-        row.innerHTML = `
-            <div class="flex items-baseline justify-between gap-2">
-                <button type="button" data-stock-tip="${position.ticker}" class="focus-chip font-mono font-semibold transition hover:text-glow">${position.ticker}</button>
-                <span class="text-sm tabular-nums text-muted">${Number(position.shares).toLocaleString()} sh</span>
-            </div>
-            <div class="mt-1 flex items-baseline justify-between gap-2">
-                <span class="text-sm tabular-nums">${money(position.market_value)}</span>
-                <span class="text-sm tabular-nums ${toneFor(position.unrealized_pl)}">${money(position.unrealized_pl)}</span>
-            </div>
-            <div class="mt-2 grid grid-cols-2 gap-2">
-                <button type="button" data-side="BUY" class="row-trade rounded-lg border border-line py-1 text-xs text-muted transition hover:border-up/60 hover:text-up">Buy</button>
-                <button type="button" data-side="SELL" class="row-trade rounded-lg border border-line py-1 text-xs text-muted transition hover:border-down/60 hover:text-down">Sell</button>
-            </div>`;
-        row.querySelector('.focus-chip').addEventListener('click', () => setFocus(position.ticker));
-        // Trading straight from a holding is the point of a multi-position panel: the
-        // form's symbol dropdown is one more thing to get wrong before you can act.
-        for (const button of row.querySelectorAll('.row-trade')) {
-            button.addEventListener('click', () => trade(button.dataset.side, position.ticker));
+    // Like the watchlist, rebuilt only when the positions themselves change, so the Buy and
+    // Sell buttons stay clickable while prices update every played day.
+    const signature = positions.map((position) => `${position.ticker}:${position.shares}`).join('|') || 'none';
+    if (body.dataset.signature !== signature) {
+        body.dataset.signature = signature;
+        if (!positions.length) {
+            body.innerHTML = '<p class="py-2 text-sm text-dim">You don\'t own any stocks yet.</p>';
+            return;
         }
-        body.appendChild(row);
+        body.innerHTML = '';
+        for (const position of positions) {
+            const row = document.createElement('div');
+            row.dataset.holding = position.ticker;
+            row.className = 'rounded-xl border border-line bg-ink-soft p-3';
+            row.innerHTML = `
+                <div class="flex items-baseline justify-between gap-2">
+                    <button type="button" data-stock-tip="${position.ticker}" class="focus-chip font-mono font-semibold transition hover:text-glow">${position.ticker}</button>
+                    <span class="text-sm tabular-nums text-muted">${Number(position.shares).toLocaleString()} sh</span>
+                </div>
+                <div class="mt-1 flex items-baseline justify-between gap-2">
+                    <span data-value class="text-sm tabular-nums"></span>
+                    <span data-pl class="text-sm tabular-nums"></span>
+                </div>
+                <div class="mt-2 grid grid-cols-2 gap-2">
+                    <button type="button" data-side="BUY" class="row-trade rounded-lg border border-line py-1 text-xs text-muted transition hover:border-up/60 hover:text-up">Buy</button>
+                    <button type="button" data-side="SELL" class="row-trade rounded-lg border border-line py-1 text-xs text-muted transition hover:border-down/60 hover:text-down">Sell</button>
+                </div>`;
+            row.querySelector('.focus-chip').addEventListener('click', () => setFocus(position.ticker));
+            // Trading straight from a holding is the point of a multi-position panel: the
+            // form's symbol dropdown is one more thing to get wrong before you can act.
+            for (const button of row.querySelectorAll('.row-trade')) {
+                button.addEventListener('click', () => trade(button.dataset.side, position.ticker));
+            }
+            body.appendChild(row);
+        }
+    }
+    for (const position of positions) {
+        const row = body.querySelector(`[data-holding="${position.ticker}"]`);
+        if (!row) continue;
+        row.querySelector('[data-value]').textContent = money(position.market_value);
+        const pl = row.querySelector('[data-pl]');
+        pl.textContent = money(position.unrealized_pl);
+        pl.className = `text-sm tabular-nums ${toneFor(position.unrealized_pl)}`;
     }
 }
 
@@ -401,15 +436,6 @@ function balanceRow(row) {
     }
 }
 
-// `excluded` keeps a switched-off series out of the legend, where clicking it would bring it back.
-function setOverlay(chart, indexes, on) {
-    for (const index of indexes) {
-        chart.data.datasets[index].hidden = !on;
-        chart.data.datasets[index].excluded = !on;
-    }
-    chart.update('none');
-}
-
 function applyLevel(state) {
     if (levelApplied) return;
     levelApplied = true;
@@ -418,8 +444,7 @@ function applyLevel(state) {
     }
     balanceRow(el('indicator-row'));
     balanceRow(el('portfolio-row'));
-    setOverlay(charts.price, [1, 2], shows(state, 'trend'));
-    setOverlay(charts.price, [5], shows(state, 'volume'));
+    setPriceOverlays(charts.price, { trend: shows(state, 'trend'), volume: shows(state, 'volume') });
 
     const level = state.level;
     if (!level) return;
@@ -617,16 +642,12 @@ function renderBasketNote(payload) {
           + 'so they are not all moving together. That helps spread out your risk.';
 }
 
-function render(state) {
+// Everything that moves with the price. Runs on every played day, not only on server replies.
+function renderMarket() {
+    const state = projectState(serverState);
     latestState = state;
-    applyLevel(state);
     focus = state.focus;
     el('sim-date').textContent = state.sim_date;
-
-    const simulated = state.simulation && state.simulation.mode === 'simulated';
-    el('mode-label').textContent = simulated
-        ? `Made-up future prices · real prices ended on ${state.simulation.fork_date}`
-        : 'Using real past prices';
 
     el('focus-label').textContent = state.focus;
     el('focus-name').textContent = companyNames[state.focus] || '';
@@ -648,16 +669,31 @@ function render(state) {
     renderWatchlist(state);
     renderTradePanel(state);
     renderHoldings(state);
-    renderBills(state);
-    renderBank(state);
     updateCharts(charts, state);
-    renderFeed(state.ai_feed);
-    renderNewsBadge(state);
-    renderLevel(state);
-    renderPatterns(state.patterns);
     refreshStockTip();
+    return state;
+}
 
-    if (state.status === 'finished') finish(state);
+function render(state) {
+    serverState = state;
+    settleBuffer(state);
+    applyLevel(state);
+    const view = renderMarket();
+
+    const simulated = state.simulation && state.simulation.mode === 'simulated';
+    el('mode-label').textContent = simulated
+        ? `Made-up future prices · real prices ended on ${state.simulation.fork_date}`
+        : 'Using real past prices';
+
+    renderBills(view);
+    renderBank(view);
+    renderFeed(view.ai_feed);
+    renderNewsBadge(view);
+    renderLevel(view);
+    renderPatterns(view.patterns);
+
+    if (state.status === 'finished') finish(view);
+    else topUp();
 }
 
 function renderFeed(feed) {
@@ -963,7 +999,9 @@ function scheduleFeedRefresh(delay = FEED_REFRESH_MS) {
     }, delay);
 }
 
-async function advance(days = 1) {
+// `expected` is the day the page already showed for the last of these days. Landing anywhere
+// else means the buffer and the server disagree about the calendar, so the buffer is dropped.
+async function advance(days = 1, expected = null) {
     if (inFlight) return;
     inFlight = true;
     try {
@@ -971,6 +1009,7 @@ async function advance(days = 1) {
             method: 'POST',
             body: JSON.stringify({ days, focus }),
         });
+        if (expected && state.sim_date !== expected) resetBuffer();
         render(state);
         logSignals(state.signals || []);
         logCharges();
@@ -1013,21 +1052,159 @@ async function refreshFeed() {
     }
 }
 
+// --- playback -------------------------------------------------------------
+// A round trip to the cloud database is slower than a day at 10x, so the page does not wait
+// on the server to show a day. It prefetches the next few days (read-only), plays them one
+// per frame at an even pace, and commits the days it has shown through /advance in batches.
+// Anything that has to happen on the day on screen - a trade, a pause, a lesson - first
+// catches the server up with sync().
+
+const LOOKAHEAD_SECONDS = 3;
+const LOOKAHEAD_MIN = 5;
+const LOOKAHEAD_MAX = 30;
+const LOOKAHEAD_RETRY_MS = 500;
+const COMMIT_MS = 500;
+const CHART_WINDOW = 180;
+
+let upcoming = [];
+let shown = [];
+let lookaheadInFlight = false;
+let lookaheadDone = false;
+let lookaheadRetryAt = 0;
+let bufferEpoch = 0;
+let holds = 0;
+let lastCommit = 0;
+
+const currentSpeed = () => SPEEDS[Number(el('speed').value)];
+const playheadDate = () => shown.at(-1)?.date ?? serverState?.sim_date;
+
+function resetBuffer() {
+    bufferEpoch += 1;
+    upcoming = [];
+    shown = [];
+    lookaheadDone = false;
+}
+
+// Drops the days the server has now reached. If its price for one of them disagrees with the
+// buffer, the future was rewritten (a market shock, a new simulation) and the rest is stale.
+function settleBuffer(state) {
+    if (state.status !== 'active') {
+        resetBuffer();
+        return;
+    }
+    const reached = [...shown, ...upcoming].find((frame) => frame.date === state.sim_date);
+    const stale = reached && state.quotes.some((quote) => {
+        const buffered = reached.quotes[quote.ticker];
+        return buffered && quote.close != null
+            && Math.abs(buffered.close - quote.close) > 1e-6 * Math.max(1, Math.abs(quote.close));
+    });
+    if (stale) {
+        resetBuffer();
+        return;
+    }
+    shown = shown.filter((frame) => frame.date > state.sim_date);
+    upcoming = upcoming.filter((frame) => frame.date > state.sim_date);
+}
+
+// The saved state moved forward to the day on screen: prices, the focused chart and what
+// every position is worth. Cash, bills and trades only change when the server says so.
+function projectState(state) {
+    if (!state || !shown.length) return state;
+    const day = shown.at(-1);
+    const quotes = state.quotes.map((quote) => ({ ...quote, ...(day.quotes[quote.ticker] || {}) }));
+    const closes = Object.fromEntries(quotes.map((quote) => [quote.ticker, quote.close]));
+    const rows = shown.map((frame) => frame.rows[state.focus]).filter(Boolean);
+    const positions = state.portfolio.positions.map((position) => {
+        const close = closes[position.ticker] ?? position.close;
+        const value = close == null ? position.market_value : position.shares * close;
+        return { ...position, close, market_value: value, unrealized_pl: value - position.shares * position.avg_cost };
+    });
+    const portfolio = state.portfolio;
+    const marketValue = positions.reduce((sum, position) => sum + position.market_value, 0);
+    const netWorth = portfolio.cash_balance + marketValue;
+    const trading = portfolio.starting_cash
+        ? (netWorth + portfolio.bills_paid - portfolio.salary_earned - portfolio.starting_cash) / portfolio.starting_cash * 100
+        : 0;
+    return {
+        ...state,
+        sim_date: day.date,
+        quotes,
+        chart: [...state.chart, ...rows].slice(-CHART_WINDOW),
+        portfolio: {
+            ...portfolio, positions, market_value: marketValue, net_worth: netWorth,
+            total_return_pct: trading, trading_return_pct: trading,
+        },
+    };
+}
+
+async function topUp() {
+    if (lookaheadInFlight || lookaheadDone || serverState?.status !== 'active') return;
+    if (performance.now() < lookaheadRetryAt) return;
+    const want = Math.min(LOOKAHEAD_MAX, Math.max(LOOKAHEAD_MIN, Math.ceil(currentSpeed().perSecond * LOOKAHEAD_SECONDS)));
+    if (upcoming.length * 2 >= want) return;
+    const epoch = bufferEpoch;
+    const after = upcoming.at(-1)?.date ?? playheadDate();
+    lookaheadInFlight = true;
+    try {
+        const data = await call(`/api/session/${sessionId}/lookahead?after=${after}&days=${want - upcoming.length}`);
+        if (epoch !== bufferEpoch) return;
+        const tail = upcoming.at(-1)?.date ?? playheadDate();
+        const fresh = data.frames.filter((frame) => frame.date > tail);
+        upcoming.push(...fresh);
+        lookaheadDone = data.done;
+        // Nothing new and not the end: the saved clock is too far behind to read further yet.
+        if (!fresh.length && !data.done) lookaheadRetryAt = performance.now() + LOOKAHEAD_RETRY_MS;
+    } catch (error) {
+        console.error(error);
+        lookaheadRetryAt = performance.now() + LOOKAHEAD_RETRY_MS;
+    } finally {
+        lookaheadInFlight = false;
+    }
+}
+
+function showNextDay() {
+    if (holds || !upcoming.length) return false;
+    shown.push(upcoming.shift());
+    renderMarket();
+    return true;
+}
+
+function commit() {
+    if (inFlight || !shown.length) return;
+    lastCommit = performance.now();
+    advance(shown.length, shown.at(-1).date);
+}
+
+async function sync() {
+    while (inFlight) await new Promise((resolve) => setTimeout(resolve, 25));
+    if (shown.length) await advance(shown.length, shown.at(-1).date);
+}
+
 function play() {
     if (timer) return;
-    const speed = SPEEDS[Number(el('speed').value)];
-    // Self-scheduling rather than setInterval: a tick that takes 400ms of a 1000ms budget
-    // waits the remaining 600ms, so "1 day/sec" means one day a second instead of drifting
-    // a whole extra second behind every time a request runs long.
-    const tick = async () => {
+    const interval = 1000 / currentSpeed().perSecond;
+    let due = performance.now() + Math.min(interval, 500);
+    // Self-scheduling on a deadline rather than setInterval, so frames land on an even beat
+    // however long the requests running underneath them take.
+    const tick = () => {
         if (!timer) return;
-        const started = performance.now();
-        await advance(speed.days);
-        if (!timer) return;
-        const spent = performance.now() - started;
-        timer = setTimeout(tick, Math.max(0, speed.ms - spent));
+        topUp();
+        const now = performance.now();
+        if (now >= due) {
+            if (showNextDay()) {
+                // Missed beats are not banked: a throttled background tab would otherwise
+                // come back and race through the buffer.
+                due = (now - due > interval ? now : due) + interval;
+            } else if (!upcoming.length && lookaheadDone && !shown.length && !inFlight && !holds) {
+                // Nothing left to play. One more step lets the server see that and end the run.
+                advance(1);
+            }
+        }
+        if (shown.length && performance.now() - lastCommit >= COMMIT_MS) commit();
+        timer = setTimeout(tick, Math.max(0, Math.min(due - performance.now(), 50)));
     };
-    timer = setTimeout(tick, speed.ms);
+    topUp();
+    timer = setTimeout(tick, 0);
     el('play-btn').textContent = 'Pause';
     el('play-btn').className = PLAYING;
     setStatus('Playing', true);
@@ -1039,6 +1216,8 @@ function pause() {
     el('play-btn').textContent = 'Play';
     el('play-btn').className = PRIMARY;
     setStatus('Paused', false);
+    // The server saves the days still only on screen, so a paused game is a saved game.
+    sync();
     // Collect whatever the background workers finished while the clock was running.
     scheduleFeedRefresh(0);
 }
@@ -1096,7 +1275,11 @@ async function trade(side, ticker, explicitShares) {
     errorBox.classList.add('hidden');
     const target = ticker || el('trade-ticker').value;
     const shares = explicitShares ?? Number(el('share-qty').value);
+    // The playhead holds still while the server catches up to the day on screen, so the
+    // trade fills at the price the player is looking at.
+    holds += 1;
     try {
+        await sync();
         render(await call(`/api/session/${sessionId}/trade`, {
             method: 'POST',
             body: JSON.stringify({ ticker: target, side, shares, focus: focus || target }),
@@ -1105,6 +1288,8 @@ async function trade(side, ticker, explicitShares) {
     } catch (error) {
         errorBox.textContent = error.message;
         errorBox.classList.remove('hidden');
+    } finally {
+        holds -= 1;
     }
 }
 
@@ -1316,7 +1501,8 @@ const TOUR_STEPS = [
         title: 'The price chart',
         body: 'The bright line is the price at the end of each day. The yellow line is the average '
             + 'price over the last 20 days, and the blue line is the last 50 days. When they cross, '
-            + 'the trend may be changing. The grey bars at the bottom show how many shares were traded.',
+            + 'the trend may be changing. The faint bars at the bottom show how many shares were traded '
+            + '(green on days the price went up, red on days it went down). Hover the chart to see any day\'s numbers.',
     },
     {
         target: 'rsi-chart',
@@ -1483,7 +1669,11 @@ document.addEventListener('keydown', (event) => {
 });
 
 el('play-btn').addEventListener('click', () => (timer ? pause() : play()));
-el('step-btn').addEventListener('click', () => advance(1));
+el('step-btn').addEventListener('click', async () => {
+    await sync();
+    if (showNextDay()) sync();
+    else advance(1);
+});
 
 el('teacher-mode').addEventListener('change', (event) => setTeacherMode(event.target.checked));
 el('coach-continue').addEventListener('click', () => closeCoach(false));
@@ -1591,9 +1781,12 @@ el('sim-fork-btn').addEventListener('click', async () => {
     button.disabled = true;
     button.textContent = 'Generating…';
     try {
-        render(await call(`/api/session/${sessionId}/simulate`, {
+        await sync();
+        const forked = await call(`/api/session/${sessionId}/simulate`, {
             method: 'POST', body: JSON.stringify({ focus }),
-        }));
+        });
+        resetBuffer();
+        render(forked);
         await refreshSimulation();
         scheduleBasket(0);
     } catch (error) {
@@ -1613,10 +1806,13 @@ el('sim-extend-btn').addEventListener('click', async () => {
         // Only the horizon changes: the seed and anchor are kept, so the bars already
         // on screen come back identical and only new days are appended.
         const horizon = (latestSimulation?.config?.horizon_days ?? 252) + 252;
-        render(await call(`/api/session/${sessionId}/simulate`, {
+        await sync();
+        const extended = await call(`/api/session/${sessionId}/simulate`, {
             method: 'POST',
             body: JSON.stringify({ horizon_days: horizon, focus }),
-        }));
+        });
+        resetBuffer();
+        render(extended);
         await refreshSimulation();
         scheduleBasket(0);
     } catch (error) {
@@ -1635,6 +1831,7 @@ el('shock-form').addEventListener('submit', async (event) => {
     button.disabled = true;
     button.textContent = 'Adding…';
     try {
+        await sync();
         const shock = await call(`/api/session/${sessionId}/shock`, {
             method: 'POST',
             body: JSON.stringify({
@@ -1646,6 +1843,7 @@ el('shock-form').addEventListener('submit', async (event) => {
             }),
         });
         el('shock-headline').value = '';
+        resetBuffer();
         render(await call(`/api/session/${sessionId}/state?focus=${focus}`));
         await refreshSimulation();
         scheduleBasket(0);
